@@ -37,12 +37,15 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import Callable
+from typing import TYPE_CHECKING, Callable
 
 import pandas as pd
 
 from trading.crypto.cot.cot_gate import weekly_cot_filter
 from trading.crypto.signals import Direction, Signal, Timeframe
+
+if TYPE_CHECKING:
+    from trading.crypto.analysis.squeeze_daily import SqueezeDailyState, SqueezeConfig
 
 CotHistoryFn = Callable[[str, pd.Timestamp], "pd.DataFrame | None"]
 
@@ -599,6 +602,122 @@ class TheoryV2Engine:
             },
         )
         return TheoryV2Decision(coin, bias, True, True, "fired", chase_reason, signal)
+
+    def evaluate_squeeze_daily(
+        self,
+        coin: str,
+        daily: pd.DataFrame,
+        h4: pd.DataFrame,
+        h1: pd.DataFrame,
+        squeeze_state: "SqueezeDailyState",
+        squeeze_cfg: "SqueezeConfig | None" = None,
+    ) -> TheoryV2Decision:
+        """N6: Daily-cadence squeeze evaluation — bypasses weekly bias gates.
+
+        This is the alternative evaluation path for squeeze breakouts.  Instead
+        of waiting for the weekly evaluator to detect a squeeze (which by then
+        is already extended), this method checks for a same-day breakout from
+        an active squeeze and arms the bias immediately.
+
+        Pipeline:
+            squeeze detection  → same-day breakout from active squeeze
+            daily confirmation → trend over 10 daily closes must match bias
+            climax cooldown    → no daily TR > 3× ATR-20 within last 10 days
+            ~~chase gate~~     → SKIPPED (the breakout IS the move)
+            4H setup           → trend over 12 4H closes must match bias
+            1H entry           → standard swing/ATR floor geometry
+
+        Returns a ``TheoryV2Decision`` with stage ``"squeeze_daily"`` when no
+        squeeze breakout is detected, or proceeds through the downstream gates
+        as usual.
+
+        NOTE: this path is **not** wired into the default ``evaluate()``.  It
+        is only invoked explicitly (e.g. by the N6 A/B harness) so production
+        defaults are unchanged until human review.
+        """
+        # Lazy import to avoid circular dependency
+        from trading.crypto.analysis.squeeze_daily import detect_squeeze_daily  # noqa: PLC0415
+
+        sq_bias, sq_diag = detect_squeeze_daily(daily, squeeze_state, squeeze_cfg)
+
+        if sq_bias == "neutral":
+            reason = "no squeeze breakout"
+            if sq_diag and sq_diag.get("squeeze_active"):
+                reason = sq_diag.get("reason", reason)
+            return TheoryV2Decision(
+                coin, "neutral", False, False, "squeeze_daily", reason,
+            )
+
+        bias = sq_bias
+
+        # Daily confirmation — same gate as weekly path
+        if not daily_confirms(daily, bias):
+            return TheoryV2Decision(
+                coin, bias, False, False, "daily",
+                "daily does not confirm squeeze bias",
+            )
+
+        # Climax cooldown: SKIPPED for squeeze breakouts.
+        # Rationale: the squeeze breakout bar is itself a high-volatility
+        # expansion — it IS the climax.  Blocking it would prevent the
+        # very entry the squeeze path is designed to capture.
+        # Same logic as skipping chase_gate.
+        in_cooldown = False
+        bars_since = None
+        cooldown_reason = "climax cooldown skipped (squeeze daily path)"
+
+        # Chase gate: SKIPPED for squeeze breakouts.
+        # Rationale: in a squeeze breakout, the move IS the entry signal.
+        # The chase gate would reject it because price is near the impulse
+        # extreme — but that's exactly where a squeeze breakout should be.
+        retrace = None
+        chase_reason = "chase gate skipped (squeeze daily path)"
+
+        # 4H setup — same gate as weekly path
+        if not four_h_setup_valid(h4, bias):
+            return TheoryV2Decision(
+                coin, bias, True, False, "4H",
+                "4H setup invalid after squeeze daily confirm",
+            )
+
+        # 1H entry — same geometry as weekly path
+        result = one_h_entry(h1, bias, daily=daily)
+        if result is None:
+            return TheoryV2Decision(
+                coin, bias, True, True, "1H",
+                "1H entry geometry invalid (squeeze daily)",
+            )
+
+        entry_px, sl, targets = result
+        direction = Direction.LONG if bias == "long" else Direction.SHORT
+        atr = daily_atr(daily)
+        risk = abs(entry_px - sl)
+        zc1_rr = abs(targets[0] - entry_px) / risk if risk > 0 else 0
+        signal = Signal(
+            coin=coin,
+            direction=direction,
+            confidence=self.confidence,
+            source=self.source,
+            bias_timeframe=Timeframe.WEEKLY,  # squeeze is a daily event but conceptually replaces weekly bias
+            setup_timeframe=Timeframe.H4,
+            trigger_timeframe=Timeframe.H1,
+            invalidation=sl,
+            targets=targets,
+            metadata={
+                "entry_price": entry_px,
+                "bias": bias,
+                "stop_distance": abs(entry_px - sl) / entry_px,
+                "zc1_rr": round(zc1_rr, 2),
+                "daily_atr_14": atr,
+                "retrace_fraction": retrace,
+                "weekly_velocity_atr": None,  # not applicable for squeeze
+                "bias_source": "squeeze_daily",
+                "squeeze_diagnostic": sq_diag,
+            },
+        )
+        return TheoryV2Decision(
+            coin, bias, True, True, "fired", chase_reason, signal,
+        )
 
 
 # --------------------------------------------------------------------------- #

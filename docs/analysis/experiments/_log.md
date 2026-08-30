@@ -26,3 +26,4 @@ See `00_baseline.md` for the comparison rules every experiment must beat.
 | 06 | (extend forward window 14d → 21d) | resolution window | +44.65 | +0.51 | ❌ noise; ETH WR drops 6pp | — |
 | 06b | (trail SL to +0.5R after ZC1 hit) | exit policy | +43.42 | -0.72 | ❌ ETH regresses | — |
 | 07 | experiment/add-link | LINK as 4th coin | +67.15 | +23.01 | ✅ ship | #18 |
+| 15 | experiment/n6-squeeze-daily | daily-cadence squeeze breakout path (off by default) | +49.70 BTC / +52.43 ETH | diagnostic only | ❌ REJECT — BTC FP 26.1% (6/23 resolved), fresh rerun 2026-08-30; snapshot `squeeze_daily_validation_20260830T001059Z.json`; Draft PR remains off | #38 |
