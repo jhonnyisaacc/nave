@@ -14,8 +14,29 @@ from pathlib import Path
 from typing import Any, Protocol
 
 
+TOP_UNIVERSE_SOURCES = frozenset(
+    {
+        "historical_top_market_cap",
+        "historical_top_100",
+        "top_100",
+        "current_top_market_cap",
+    }
+)
+
+
 class UniverseProviderUnavailable(RuntimeError):
     """Raised when no point-in-time universe snapshot is available."""
+
+
+def identity_key_for(
+    canonical_asset_id: str | None, contract_address: str | None
+) -> str | None:
+    """Build the stable identity key used across universe and market data rows."""
+    if canonical_asset_id:
+        return f"asset:{canonical_asset_id.lower()}"
+    if contract_address:
+        return f"contract:{contract_address.lower()}"
+    return None
 
 
 def as_utc(value: datetime | str) -> datetime:
@@ -56,19 +77,11 @@ class UniverseMember:
     @property
     def identity_key(self) -> str | None:
         """Return canonical identity; ticker-only records intentionally return None."""
-        if self.canonical_asset_id:
-            return f"asset:{self.canonical_asset_id.lower()}"
-        if self.contract_address:
-            return f"contract:{self.contract_address.lower()}"
-        return None
+        return identity_key_for(self.canonical_asset_id, self.contract_address)
 
     @property
     def is_top_ranked(self) -> bool:
-        return self.universe_source in {
-            "historical_top_market_cap",
-            "historical_top_100",
-            "top_100",
-        } and self.rank is not None
+        return self.universe_source in TOP_UNIVERSE_SOURCES and self.rank is not None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -122,6 +135,160 @@ class PointInTimeUniverseProvider(Protocol):
     def snapshot_at(self, observation_timestamp: datetime, *, universe_size: int) -> UniverseSnapshot:
         """Return the latest snapshot available by the observation timestamp."""
 
+
+class CurrentUniverseProvider:
+    """Point-in-time provider for one explicitly observed current snapshot.
+
+    The provider is deliberately constructed from already-observed market-cap
+    rows and exchange metadata.  It does not fetch data and cannot be used to
+    turn a current snapshot into historical membership.
+    """
+
+    def __init__(self, snapshot: UniverseSnapshot) -> None:
+        self.snapshot = snapshot
+
+    @classmethod
+    def from_market_cap_rows(
+        cls,
+        rows: list[dict[str, Any]],
+        perpetual_contracts: list[dict[str, Any]],
+        *,
+        observation_timestamp: datetime,
+        source: str = "current_market_cap_and_exchange_metadata",
+    ) -> "CurrentUniverseProvider":
+        observed_at = as_utc(observation_timestamp)
+        valid_rows = [row for row in rows if isinstance(row, dict) and row.get("id")]
+        valid_rows.sort(
+            key=lambda row: (
+                int(row["market_cap_rank"])
+                if str(row.get("market_cap_rank", "")).isdigit()
+                else 10**9,
+                str(row.get("id")),
+            )
+        )
+        contracts_by_symbol: dict[str, list[dict[str, Any]]] = {}
+        for contract in perpetual_contracts:
+            if not isinstance(contract, dict) or not contract.get("name"):
+                continue
+            contracts_by_symbol.setdefault(str(contract["name"]).upper(), []).append(contract)
+        ids_by_symbol: dict[str, list[str]] = {}
+        for row in valid_rows:
+            ids_by_symbol.setdefault(str(row.get("symbol") or "").upper(), []).append(
+                str(row["id"])
+            )
+
+        members: list[UniverseMember] = []
+        for position, row in enumerate(valid_rows, start=1):
+            symbol = str(row.get("symbol") or "").upper()
+            contract = _contract_for_row(row, contracts_by_symbol.get(symbol, ()), ids_by_symbol)
+            rank = int(row["market_cap_rank"]) if str(row.get("market_cap_rank", "")).isdigit() else position
+            members.append(
+                UniverseMember(
+                    symbol=symbol,
+                    canonical_asset_id=str(row["id"]),
+                    contract_address=row.get("contract_address")
+                    or (contract.get("contract_address") if contract else None),
+                    venue="hyperliquid" if contract else None,
+                    contract_symbol=str(contract["name"]) if contract else None,
+                    quote_currency=str(contract.get("quoteCurrency") or "USDC") if contract else "USD",
+                    observation_timestamp=observed_at,
+                    source_timestamp=observed_at,
+                    available_at=observed_at,
+                    universe_source="current_top_market_cap",
+                    data_completeness="complete",
+                    rank=rank,
+                )
+            )
+
+        known_top_ids = {member.canonical_asset_id for member in members}
+        for symbol, contracts in sorted(contracts_by_symbol.items()):
+            for contract in contracts:
+                # A contract outside the market-cap response is retained as an
+                # unresolved ticker unless the source supplies a canonical ID.
+                canonical_id = contract.get("canonical_asset_id")
+                if canonical_id is None and len(ids_by_symbol.get(symbol, [])) == 1:
+                    canonical_id = ids_by_symbol[symbol][0]
+                if canonical_id in known_top_ids:
+                    continue
+                members.append(
+                    UniverseMember(
+                        symbol=symbol,
+                        canonical_asset_id=str(canonical_id) if canonical_id else None,
+                        contract_address=contract.get("contract_address"),
+                        venue="hyperliquid",
+                        contract_symbol=str(contract["name"]),
+                        quote_currency=str(contract.get("quoteCurrency") or "USDC"),
+                        observation_timestamp=observed_at,
+                        source_timestamp=observed_at,
+                        available_at=observed_at,
+                        universe_source="liquid_perpetual",
+                        data_completeness="complete" if canonical_id else "incomplete",
+                        missingness_reason=None if canonical_id else "canonical_asset_id_unresolved",
+                    )
+                )
+
+        return cls(
+            UniverseSnapshot(
+                observation_timestamp=observed_at,
+                source_timestamp=observed_at,
+                available_at=observed_at,
+                source=source,
+                members=tuple(members),
+            )
+        )
+
+    def snapshot_at(self, observation_timestamp: datetime, *, universe_size: int) -> UniverseSnapshot:
+        if universe_size <= 0:
+            raise ValueError("universe_size must be positive")
+        as_of = as_utc(observation_timestamp)
+        if (
+            self.snapshot.observation_timestamp > as_of
+            or (self.snapshot.source_timestamp is not None and self.snapshot.source_timestamp > as_of)
+            or (self.snapshot.available_at is not None and self.snapshot.available_at > as_of)
+        ):
+            raise UniverseProviderUnavailable(
+                f"current universe snapshot is not available at {as_of.isoformat()}"
+            )
+        top_ranked = [
+            member
+            for member in self.snapshot.members
+            if member.is_top_ranked and member.rank <= universe_size
+        ]
+        liquid_perpetuals = [
+            member for member in self.snapshot.members if member.universe_source == "liquid_perpetual"
+        ]
+        return replace(self.snapshot, members=tuple(top_ranked + liquid_perpetuals))
+
+
+def _contract_for_row(
+    row: dict[str, Any],
+    contracts: list[dict[str, Any]] | tuple[dict[str, Any], ...],
+    ids_by_symbol: dict[str, list[str]],
+) -> dict[str, Any] | None:
+    """Join a market-cap row to a perp only when the identity is unambiguous."""
+    if not contracts:
+        return None
+    row_id = str(row.get("id") or "").lower()
+    row_address = str(row.get("contract_address") or "").lower()
+    explicit = [
+        contract
+        for contract in contracts
+        if (
+            contract.get("canonical_asset_id")
+            and str(contract["canonical_asset_id"]).lower() == row_id
+        )
+        or (
+            contract.get("contract_address")
+            and row_address
+            and str(contract["contract_address"]).lower() == row_address
+        )
+    ]
+    if len(explicit) == 1:
+        return explicit[0]
+    symbol = str(row.get("symbol") or "").upper()
+    if len(contracts) == 1 and len(ids_by_symbol.get(symbol, [])) == 1:
+        return contracts[0]
+    return None
 
 def _member_from_payload(payload: dict[str, Any], snapshot: dict[str, Any]) -> UniverseMember:
     observation = payload.get("observation_timestamp", snapshot.get("observation_timestamp"))
@@ -207,11 +374,7 @@ class FixtureUniverseProvider:
         top_ranked = [
             member
             for member in snapshot.members
-            if member.universe_source in {
-                "historical_top_market_cap",
-                "historical_top_100",
-                "top_100",
-            }
+            if member.universe_source in TOP_UNIVERSE_SOURCES
             and member.rank is not None
             and member.rank <= universe_size
         ]

@@ -27,11 +27,13 @@ from trading.crypto.momentum.replay import (
     simulate_paper_setup,
 )
 from trading.crypto.momentum.universe import (
+    CurrentUniverseProvider,
     FixtureUniverseProvider,
     UniverseMember,
     UniverseSnapshot,
     UniverseProviderUnavailable,
     deduplicate_members,
+    identity_key_for,
 )
 
 
@@ -56,6 +58,7 @@ __all__ = [
     "DISCOVERY_HYPOTHESIS",
     "DiscoveryCandidate",
     "DiscoveryConfig",
+    "CurrentUniverseProvider",
     "ExistingMomentumSetupValidator",
     "FixtureMarketDataProvider",
     "FixtureUniverseProvider",
@@ -66,6 +69,7 @@ __all__ = [
     "UniverseProviderUnavailable",
     "UniverseSnapshot",
     "deduplicate_members",
+    "identity_key_for",
     "load_discovery_config",
     "load_replay_fixture",
     "no_chase_allowed",

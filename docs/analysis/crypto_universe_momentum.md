@@ -3,8 +3,10 @@
 Status: research-only implementation; no edge is validated.
 
 This layer extends the existing BTC/ETH momentum scan with a reusable,
-point-in-time discovery path for a top-100-plus-liquid-perpetual universe. It
-is deliberately separate from live scans, alerts, wallet code, and execution.
+point-in-time discovery path for a top-100-plus-liquid-perpetual universe. The
+existing scan can append the current discovery view with
+`--include-universe-discovery`; historical replay remains explicitly offline.
+The layer is separate from alerts, wallet code, and execution.
 
 ## Hypothesis
 
@@ -29,10 +31,12 @@ The implementation labels evidence explicitly:
 ## Point-in-time contract
 
 `FixtureUniverseProvider` implements the provider abstraction used by the
-replay. A snapshot is eligible only when both its observation timestamp and
-`available_at` are no later than the requested observation time. The provider
-does not fall back to the current top 100. A production provider can implement
-the same `snapshot_at()` contract using archived market-cap publications.
+replay. `CurrentUniverseProvider` implements the same contract for one current
+market-cap publication joined to current perpetual metadata. A snapshot is
+eligible only when both its observation timestamp and `available_at` are no
+later than the requested observation time. Historical replay does not fall
+back to the current top 100; a production historical provider must use
+archived market-cap publications.
 
 Members retain ticker, canonical asset ID or contract address, venue, contract
 symbol, quote currency, observation/source/availability timestamps, source,
@@ -67,7 +71,7 @@ loaded into one `DiscoveryConfig` object:
 | Minimum trading history | 72 hours |
 | Minimum rank score | 50/100 |
 | Universe benchmark | Median 7-day member return |
-| Meaningful forward move | absolute 10% over 168 hours |
+| Meaningful forward move | directional 10% over 168 hours |
 | Fee assumption | 5 bps per side |
 | Default slippage assumption | 10 bps per side |
 
@@ -84,10 +88,11 @@ approved research classifications, including `PROMISING EXPLORATORY SIGNAL`,
 It requires 4H structure, a 1H trigger, entry zone, invalidation, TP1/TP2/TP3,
 expected move, net cost-aware R:R, liquidity, and no-chase checks.
 
-Paper simulation uses next-bar historical rows, conservative stop-first
-handling when a candle touches both stop and target, fees, slippage, funding,
-holding period, and no fill when the liquidity gate fails. It never submits an
-order or creates a live watch.
+Paper simulation uses the first future candle that actually trades through the
+entry zone, conservative stop-first handling when a candle touches both stop
+and target, observed spread/slippage when available, fees, funding, and holding
+period. It records `NO_FILL` when the entry zone is never reached and never
+submits an order or creates a live watch.
 
 ## Reproducible offline replay
 
@@ -114,6 +119,17 @@ fee/funding/slippage impact, asset/regime summaries, cadence/threshold
 sensitivity, and the explicit target audit. On this fixture, EDGE is purposely
 ambiguous and PONS is purposely outside the historical top 100; neither state
 is interpreted as a successful or unsuccessful trading result.
+
+For a current research pass through the existing BTC/ETH scan:
+
+```bash
+PYTHONPATH=. .venv/bin/python cli/main.py crypto momentum-scan \
+  --include-universe-discovery --universe-size 100 --json
+```
+
+The current pass uses CoinGecko market-cap ordering and Hyperliquid perpetual
+metadata. Provider failures remain `PROVIDER_UNAVAILABLE`; missing order-book
+depth is not turned into a favorable liquidity assumption.
 
 For real historical use, supply a provider with archived market-cap snapshots
 and venue/contract history. If that data is unavailable, the result must stay

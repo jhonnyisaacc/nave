@@ -142,6 +142,11 @@ class HyperliquidClient:
             return {}
         return {str(k): str(v) for k, v in result.items()}
 
+    def get_l2_book(self, coin: str) -> dict[str, Any]:
+        """Return the read-only level-2 order book for a perp market."""
+        result = self._info({"type": "l2Book", "coin": coin.upper()})
+        return result if isinstance(result, dict) else {}
+
     def get_mid(self, coin: str) -> float:
         mids = self.get_all_mids()
         if coin not in mids:

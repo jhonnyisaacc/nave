@@ -173,8 +173,12 @@ class DiscoveryCandidate:
             "source_timestamp": self.member.source_timestamp.isoformat()
             if self.member.source_timestamp
             else None,
+            "available_at": self.member.available_at.isoformat()
+            if self.member.available_at
+            else None,
             "universe_source": self.member.universe_source,
             "universe_rank": self.member.rank,
+            "exchange_contract_type": self.member.exchange_contract_type,
             "data_completeness": self.member.data_completeness,
             "missingness_reason": self.member.missingness_reason,
             "rank_score": round(self.rank_score, 4) if self.rank_score is not None else None,

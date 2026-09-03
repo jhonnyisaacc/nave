@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import replace
+from types import SimpleNamespace
 
 import pandas as pd
 import pytest
@@ -19,13 +20,17 @@ from trading.crypto.momentum.replay import (
     FixtureMarketDataProvider,
     PaperSetup,
     UniverseMomentumReplay,
+    _candidate_matches,
+    _first_eligible_records,
     load_replay_fixture,
     no_chase_allowed,
     simulate_paper_setup,
 )
 from trading.crypto.momentum.universe import (
+    CurrentUniverseProvider,
     FixtureUniverseProvider,
     UniverseMember,
+    UniverseSnapshot,
     UniverseProviderUnavailable,
     deduplicate_members,
     members_for_target,
@@ -116,6 +121,72 @@ def test_canonical_identity_deduplicates_venues_but_keeps_ambiguous_tickers() ->
     assert sum(member.canonical_asset_id == "arbitrum" for member in members) == 1
     assert len(members_for_target(members, "EDGE")) == 2
     assert len(members_for_target(members, "arbitrum")) == 1
+
+
+def test_contract_address_is_a_target_identity_and_outcome_key() -> None:
+    member = replace(_member(symbol="X", canonical_asset_id=None), contract_address="0xABC")
+    candidate = SimpleNamespace(member=member)
+    assert _candidate_matches(candidate, {"0XABC"}) is True
+
+    replay = UniverseMomentumReplay(
+        FixtureUniverseProvider([UniverseSnapshot(
+            observation_timestamp=member.observation_timestamp,
+            source_timestamp=member.source_timestamp,
+            available_at=member.available_at,
+            source="test",
+            members=(member,),
+        )]),
+        FixtureMarketDataProvider({}),
+    )
+    serialized = {
+        **member.to_dict(),
+        "universe_rank": member.rank,
+        "rank_score": 75.0,
+        "ranking_state": "ELIGIBLE",
+        "features": {"return_7d": 0.2},
+        "liquidity": {"state": "PASS"},
+        "missingness": [],
+        "first_eligible_at": member.observation_timestamp.isoformat(),
+    }
+    report = replay._target_report(
+        ["0xABC"],
+        [{"universe_members": [member.to_dict()], "candidates": [serialized]}],
+        {"contract:0xabc": serialized},
+        [{"canonical_asset_id": None, "contract_address": "0xABC", "status": "COMPLETED"}],
+    )
+    assert report[0]["status"] == "DETECTED_FIRST_ELIGIBLE"
+    assert report[0]["outcome"]["status"] == "COMPLETED"
+
+
+def test_current_provider_keeps_current_top_market_cap_separate_from_history() -> None:
+    provider = CurrentUniverseProvider.from_market_cap_rows(
+        [{"id": "arbitrum", "symbol": "arb", "market_cap_rank": 1}],
+        [{"name": "ARB"}, {"name": "OUTSIDE", "canonical_asset_id": "outside"}],
+        observation_timestamp="2026-09-03T00:00:00Z",
+    )
+    snapshot = provider.snapshot_at("2026-09-03T00:00:00Z", universe_size=100)
+    assert snapshot.members[0].universe_source == "current_top_market_cap"
+    assert snapshot.members[0].contract_symbol == "ARB"
+    assert any(member.symbol == "OUTSIDE" and not member.is_top_ranked for member in snapshot.members)
+
+
+def test_current_provider_does_not_join_an_ambiguous_ticker_by_symbol() -> None:
+    provider = CurrentUniverseProvider.from_market_cap_rows(
+        [
+            {"id": "edge-protocol", "symbol": "edge", "market_cap_rank": 1},
+            {"id": "edge-network", "symbol": "edge", "market_cap_rank": 2},
+        ],
+        [{"name": "EDGE"}],
+        observation_timestamp="2026-09-03T00:00:00Z",
+    )
+
+    top_members = tuple(
+        member
+        for member in provider.snapshot_at("2026-09-03T00:00:00Z", universe_size=100).members
+        if member.is_top_ranked
+    )
+    assert [member.contract_symbol for member in top_members] == [None, None]
+    assert all(member.venue is None for member in top_members)
 
 
 def test_missing_market_data_is_unknown_not_a_negative_filter() -> None:
@@ -243,11 +314,115 @@ def test_fees_funding_and_slippage_reduce_paper_result() -> None:
     assert result["net_return"] < result["gross_return"]
 
 
+def test_paper_simulation_does_not_fill_when_price_gaps_past_entry_zone() -> None:
+    setup = PaperSetup(
+        "PROMISING EXPLORATORY SIGNAL",
+        True,
+        "long",
+        [100.0, 100.0],
+        95.0,
+        [105.0, 110.0, 115.0],
+        0.10,
+        2.0,
+        0.0,
+        True,
+    )
+    future = _ohlcv([200.0, 204.0], start="2026-08-25T01:00:00Z")
+    result = simulate_paper_setup(
+        setup,
+        future,
+        config=DiscoveryConfig(),
+        funding_rate=0.0,
+    )
+
+    assert result == {
+        "status": "NO_FILL",
+        "r_multiple": None,
+        "reason": "entry_zone_not_reached",
+    }
+
+
+def test_paper_simulation_uses_observed_liquidity_costs() -> None:
+    setup = PaperSetup(
+        "PROMISING EXPLORATORY SIGNAL",
+        True,
+        "long",
+        [100.0, 100.0],
+        95.0,
+        [105.0, 110.0, 115.0],
+        0.10,
+        2.0,
+        0.0,
+        True,
+        slippage_bps=40.0,
+        spread_bps=20.0,
+    )
+    future = _ohlcv([100.0, 111.0], start="2026-08-25T01:00:00Z")
+    result = simulate_paper_setup(
+        setup,
+        future,
+        config=DiscoveryConfig(),
+        funding_rate=0.0,
+    )
+
+    assert result["status"] == "COMPLETED"
+    assert result["slippage_bps"] == 40.0
+    assert result["spread_bps"] == 20.0
+    assert result["spread_impact"] == pytest.approx(0.002)
+    assert result["slippage_impact"] == pytest.approx(0.008)
+
+
+def test_meaningful_move_requires_the_detected_direction() -> None:
+    values = [100.0] * 168 + [80.0]
+    market = AssetMarketData(frames={"1h": _ohlcv(values, start="2026-01-01T00:00:00Z")})
+    replay = UniverseMomentumReplay(
+        FixtureUniverseProvider([]),
+        FixtureMarketDataProvider({"asset:test-asset": market}),
+    )
+    outcome = replay._resolve_outcome(
+        {
+            "symbol": "TEST",
+            "canonical_asset_id": "test-asset",
+            "contract_address": None,
+            "first_eligible_at": "2026-01-01T00:00:00Z",
+            "features": {"price": 100.0},
+        },
+        validate_setups=False,
+    )
+
+    assert outcome["status"] == "COMPLETED"
+    assert outcome["forward_return"] < 0
+    assert outcome["meaningful_move"] is False
+
+
 def test_no_chase_rejects_price_beyond_valid_entry_zone() -> None:
     assert no_chase_allowed(101.0, 100.0, "long", 0.02) is True
     assert no_chase_allowed(103.0, 100.0, "long", 0.02) is False
     assert no_chase_allowed(98.0, 100.0, "short", 0.02) is True
     assert no_chase_allowed(96.0, 100.0, "short", 0.02) is False
+
+
+def test_threshold_sensitivity_uses_the_first_detection_at_that_threshold() -> None:
+    def candidate(score: float, timestamp: str) -> dict:
+        return {
+            "canonical_asset_id": "asset-a",
+            "contract_address": None,
+            "rank_score": score,
+            "features": {"return_7d": 0.2},
+            "liquidity": {"state": "PASS"},
+            "missingness": [],
+            "ranking_state": "ELIGIBLE",
+            "observation_timestamp": timestamp,
+            "first_eligible_at": timestamp,
+        }
+
+    observations = [
+        {"observation_timestamp": "2026-08-25T00:00:00+00:00", "candidates": [candidate(55, "2026-08-25T00:00:00+00:00")]},
+        {"observation_timestamp": "2026-08-25T06:00:00+00:00", "candidates": [candidate(75, "2026-08-25T06:00:00+00:00")]},
+    ]
+
+    first = _first_eligible_records(observations, min_rank_score=70)
+    assert first["asset:asset-a"]["first_eligible_at"] == "2026-08-25T06:00:00+00:00"
 
 
 def test_replay_is_deterministic_and_reports_target_states() -> None:
@@ -278,6 +453,9 @@ def test_replay_is_deterministic_and_reports_target_states() -> None:
         "EDGE": "UNKNOWN_ASSET_IDENTITY",
         "PONS": "OUTSIDE_HISTORICAL_TOP_100",
     }
+    arb_report = next(item for item in first["target_report"] if item["target"] == "ARB")
+    assert arb_report["liquid_perpetual_observed"] is True
+    assert set(arb_report["venues"]) == {"binance", "hyperliquid"}
 
 
 def test_json_schema_and_human_formatter_are_research_only() -> None:
@@ -320,6 +498,87 @@ def test_fixture_research_path_does_not_touch_market_client() -> None:
 
     assert payload["mode"] == "historical_research_only"
     assert payload["provider"]["kind"] == "offline_fixture"
+
+
+def test_existing_scan_can_append_current_universe_research_without_execution(tmp_path, monkeypatch) -> None:
+    from trading.crypto.momentum.service import MomentumMarketService, MomentumTimeframes
+    from trading.crypto.momentum.thesis import MomentumThesisStore
+
+    service = MomentumMarketService(
+        market_client=SimpleNamespace(),
+        thesis_store=MomentumThesisStore(path=tmp_path / "theses.json"),
+    )
+    frame = pd.DataFrame(
+        {
+            "timestamp": ["2026-08-25T00:00:00Z"],
+            "close": [100.0],
+        }
+    )
+    monkeypatch.setattr(
+        service,
+        "load_live_frames",
+        lambda symbol, timeframes: {"daily": frame, "setup": frame, "trigger": frame},
+    )
+    monkeypatch.setattr(service.engine, "evaluate_symbol", lambda **kwargs: [])
+    monkeypatch.setattr(
+        service,
+        "scan_current_universe_discovery",
+        lambda **kwargs: {"mode": "current_research_only", "status": "OK"},
+    )
+    payload = service.scan_live(
+        symbols=["BTCUSDT", "ETHUSDT"],
+        timeframes=MomentumTimeframes(bias="1d", setup="4h", trigger="1h"),
+        include_universe_discovery=True,
+    )
+
+    assert payload["universe_discovery"]["mode"] == "current_research_only"
+
+
+def test_current_universe_discovery_uses_read_only_providers(tmp_path, monkeypatch) -> None:
+    from trading.crypto.momentum.service import MomentumMarketService
+    from trading.crypto.momentum.thesis import MomentumThesisStore
+
+    fixture = load_replay_fixture(FIXTURE)
+    market = fixture.market_data["asset:arbitrum"]
+
+    class _ReadOnlyClient:
+        def get_meta(self):
+            return {"universe": [{"name": "ARB"}]}
+
+        def get_l2_book(self, coin):
+            return {
+                "levels": [
+                    [{"px": "99.99", "sz": "1000"}],
+                    [{"px": "100.01", "sz": "1000"}],
+                ]
+            }
+
+    service = MomentumMarketService(
+        market_client=_ReadOnlyClient(),
+        thesis_store=MomentumThesisStore(path=tmp_path / "theses.json"),
+    )
+    monkeypatch.setattr(
+        service,
+        "fetch_current_market_cap_rows",
+        lambda universe_size: [{"id": "arbitrum", "symbol": "arb", "market_cap_rank": 1}],
+    )
+    monkeypatch.setattr(
+        service,
+        "load_historical_frames",
+        lambda symbol, timeframes, lookback_days: {
+            "daily": market.frames["1d"],
+            "setup": market.frames["4h"],
+            "trigger": market.frames["1h"],
+            "open_interest": market.derivatives,
+            "funding_rate": 0.00001,
+        },
+    )
+
+    payload = service.scan_current_universe_discovery(universe_size=100, max_candidates=5)
+
+    assert payload["status"] == "OK"
+    assert payload["universe"]["source"] == "current_market_cap_and_exchange_metadata"
+    assert payload["universe"]["members"][0]["universe_source"] == "current_top_market_cap"
 
 
 def test_cli_research_scan_json_smoke() -> None:

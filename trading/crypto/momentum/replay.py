@@ -29,11 +29,13 @@ from trading.crypto.momentum.universe import (
     UniverseProviderUnavailable,
     as_utc,
     deduplicate_members,
+    identity_key_for,
     members_for_target,
 )
 
 
 REPLAY_SCHEMA_VERSION = "crypto-momentum-discovery-replay.v1"
+DEFAULT_REPLAY_TARGETS = ("ARB", "CAKE", "CRV", "TWT", "EDGE", "PONS")
 ALLOWED_SETUP_CLASSIFICATIONS = {
     "PROMISING EXPLORATORY SIGNAL",
     "WEAK / UNSTABLE SIGNAL",
@@ -62,6 +64,8 @@ class PaperSetup:
     no_chase: bool | None
     blockers: tuple[str, ...] = ()
     data_complete: bool = True
+    slippage_bps: float | None = None
+    spread_bps: float | None = None
 
     def __post_init__(self) -> None:
         if self.classification not in ALLOWED_SETUP_CLASSIFICATIONS:
@@ -81,6 +85,8 @@ class PaperSetup:
             "no_chase": self.no_chase,
             "blockers": list(self.blockers),
             "data_complete": self.data_complete,
+            "slippage_bps": self.slippage_bps,
+            "spread_bps": self.spread_bps,
         }
 
 
@@ -208,11 +214,21 @@ class ExistingMomentumSetupValidator:
                 float(plan.tp2) if plan.tp2 is not None else None,
                 _latest_funding(market.derivatives, observation_timestamp),
                 config,
+                slippage_bps=candidate.liquidity.slippage_bps,
+                spread_bps=candidate.liquidity.spread_bps,
             ),
-            _cost_pct(config, _latest_funding(market.derivatives, observation_timestamp), 1),
+            _cost_pct(
+                config,
+                _latest_funding(market.derivatives, observation_timestamp),
+                1,
+                slippage_bps=candidate.liquidity.slippage_bps,
+                spread_bps=candidate.liquidity.spread_bps,
+            ),
             no_chase,
             tuple(blockers),
             True,
+            candidate.liquidity.slippage_bps,
+            candidate.liquidity.spread_bps,
         )
 
 
@@ -322,13 +338,20 @@ class UniverseMomentumReplay:
             validate_setups=validate_setups,
             max_candidates=max_candidates,
         )
-        first_records = _first_eligible_records(observations)
+        first_records = _first_eligible_records(
+            observations, min_rank_score=self.config.min_rank_score
+        )
         outcomes = [
             self._resolve_outcome(record, validate_setups=validate_setups)
             for record in first_records.values()
         ]
         metrics = summarize_replay(observations, outcomes, self.config, window_start=start_at)
-        target_report = self._target_report(symbols or [], observations, first_records, outcomes)
+        target_report = self._target_report(
+            list(symbols) if symbols is not None else list(DEFAULT_REPLAY_TARGETS),
+            observations,
+            first_records,
+            outcomes,
+        )
         payload: dict[str, Any] = {
             "schema_version": REPLAY_SCHEMA_VERSION,
             "generated_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
@@ -343,7 +366,9 @@ class UniverseMomentumReplay:
             "assumptions": {
                 "publication_time_rule": "A universe/data observation is usable only when available_at/source_timestamp is <= observation time.",
                 "current_universe_fallback": False,
-                "cadence": cadence,
+                "cadence": cadence
+                if cadence is not None
+                else f"{cadence_delta.total_seconds() / 3600:g}h",
                 "universe_size": universe_size,
                 "source": "provider_contract_or_offline_fixture",
                 "execution": "paper-only; no orders, alerts, wallets, or permissions are touched",
@@ -372,7 +397,9 @@ class UniverseMomentumReplay:
         symbols: list[str] | None,
         validate_setups: bool,
         max_candidates: int,
+        config: DiscoveryConfig | None = None,
     ) -> list[dict[str, Any]]:
+        cfg = config or self.config
         wanted = {value.strip().upper() for value in (symbols or []) if value.strip()}
         current = pd.Timestamp(start_at)
         output: list[dict[str, Any]] = []
@@ -401,7 +428,10 @@ class UniverseMomentumReplay:
             observation["source_timestamp"] = (
                 snapshot.source_timestamp.isoformat() if snapshot.source_timestamp else None
             )
-            observation["universe_members"] = [member.to_dict() for member in members]
+            # Preserve every venue observation for auditability; the candidate
+            # ranking below still uses the canonical-identity deduplicated set.
+            observation["universe_members"] = [member.to_dict() for member in snapshot.members]
+            observation["universe_members_deduplicated"] = [member.to_dict() for member in members]
             if not snapshot.point_in_time_valid:
                 observation["candidate_count"] = 0
                 observation["eligible_count"] = 0
@@ -419,7 +449,7 @@ class UniverseMomentumReplay:
                 members,
                 data_by_identity,
                 as_of,
-                config=self.config,
+                config=cfg,
             )
             serializable_candidates: list[dict[str, Any]] = []
             for candidate in candidates:
@@ -430,7 +460,7 @@ class UniverseMomentumReplay:
                     market = data_by_identity.get(candidate.member.identity_key)
                     if market is not None:
                         serialized["setup_validation"] = self.setup_validator.validate(
-                            candidate, market, as_of, self.config
+                            candidate, market, as_of, cfg
                         ).to_dict()
                 serializable_candidates.append(serialized)
             # Keep the complete observation for reproducibility.  The capped
@@ -453,6 +483,7 @@ class UniverseMomentumReplay:
         base = {
             "symbol": member.symbol,
             "canonical_asset_id": member.canonical_asset_id,
+            "contract_address": member.contract_address,
             "detection_timestamp": as_of.isoformat(),
             "data_timestamp": record.get("data_timestamp"),
             "status": "INCOMPLETE_DATA",
@@ -477,6 +508,10 @@ class UniverseMomentumReplay:
             base["status"] = "BLOCKED BY OUTCOME COVERAGE"
             base["unknowns"] = ["forward_outcome_window_incomplete"]
             return base
+        if not {"high", "low"}.issubset(future.columns):
+            base["status"] = "INCOMPLETE_DATA"
+            base["unknowns"] = ["forward_ohlc_high_low_unavailable"]
+            return base
         side = None
         setup_raw = record.get("setup_validation") if validate_setups else None
         if isinstance(setup_raw, dict):
@@ -484,8 +519,13 @@ class UniverseMomentumReplay:
         side = side if side in {"long", "short"} else "long"
         sign = 1.0 if side == "long" else -1.0
         forward_return = (close / float(current_price) - 1.0) * sign
-        highs = future["high"].astype(float)
-        lows = future["low"].astype(float)
+        try:
+            highs = future["high"].astype(float)
+            lows = future["low"].astype(float)
+        except (TypeError, ValueError):
+            base["status"] = "INCOMPLETE_DATA"
+            base["unknowns"] = ["forward_ohlc_numeric_data_invalid"]
+            return base
         mfe = (float(highs.max()) / float(current_price) - 1.0) if side == "long" else (
             float(current_price) / float(lows.min()) - 1.0
         )
@@ -499,7 +539,7 @@ class UniverseMomentumReplay:
                 "forward_return": forward_return,
                 "mfe": mfe,
                 "mae": mae,
-                "meaningful_move": abs(forward_return) >= self.config.meaningful_move_pct,
+                "meaningful_move": forward_return >= self.config.meaningful_move_pct,
                 "outcome_timestamp": close_timestamp.isoformat(),
                 "regime": _regime(record.get("features", {}).get("universe_benchmark_return")),
             }
@@ -524,9 +564,9 @@ class UniverseMomentumReplay:
         if not symbols:
             return []
         by_identity_outcome = {
-            f"asset:{item.get('canonical_asset_id').lower()}": item
+            identity_key_for(item.get("canonical_asset_id"), item.get("contract_address")): item
             for item in outcomes
-            if item.get("canonical_asset_id")
+            if identity_key_for(item.get("canonical_asset_id"), item.get("contract_address"))
         }
         observed_members: list[UniverseMember] = []
         for observation in observations:
@@ -537,13 +577,17 @@ class UniverseMomentumReplay:
         reports: list[dict[str, Any]] = []
         for target in symbols:
             matches = members_for_target(deduped, target)
+            metadata_matches = members_for_target(tuple(observed_members), target)
+            reported_members = metadata_matches or matches
             report: dict[str, Any] = {
                 "target": target.upper(),
-                "canonical_asset_ids": sorted({m.canonical_asset_id for m in matches if m.canonical_asset_id}),
-                "venues": sorted({m.venue for m in matches if m.venue}),
-                "contract_symbols": sorted({m.contract_symbol for m in matches if m.contract_symbol}),
-                "top_100_observed": any(m.is_top_ranked for m in matches),
-                "liquid_perpetual_observed": any(m.universe_source == "liquid_perpetual" for m in matches),
+                "canonical_asset_ids": sorted({m.canonical_asset_id for m in reported_members if m.canonical_asset_id}),
+                "venues": sorted({m.venue for m in reported_members if m.venue}),
+                "contract_symbols": sorted({m.contract_symbol for m in reported_members if m.contract_symbol}),
+                "top_100_observed": any(m.is_top_ranked for m in reported_members),
+                "liquid_perpetual_observed": any(
+                    m.universe_source == "liquid_perpetual" for m in reported_members
+                ),
                 "status": None,
                 "first_eligible_at": None,
             }
@@ -566,7 +610,10 @@ class UniverseMomentumReplay:
                         candidate.get("liquidity", {}).get("state")
                         for observation in observations
                         for candidate in observation.get("candidates", [])
-                        if candidate.get("canonical_asset_id") == matches[0].canonical_asset_id
+                        if identity_key_for(
+                            candidate.get("canonical_asset_id"), candidate.get("contract_address")
+                        )
+                        == matches[0].identity_key
                     ]
                     if "REJECT" in statuses:
                         report["status"] = "FUTURES_LIQUIDITY_INSUFFICIENT"
@@ -597,30 +644,53 @@ class UniverseMomentumReplay:
                 validate_setups=validate_setups,
                 max_candidates=max_candidates,
             )
-            first = _first_eligible_records(observations)
-            outcomes = [self._resolve_outcome(record, validate_setups=validate_setups) for record in first.values()]
-            summary = summarize_replay(observations, outcomes, self.config, window_start=start)
+            base_first = _first_eligible_records(
+                observations, min_rank_score=self.config.min_rank_score
+            )
+            base_outcomes = [
+                self._resolve_outcome(record, validate_setups=validate_setups)
+                for record in base_first.values()
+            ]
+            base_summary = summarize_replay(
+                observations,
+                base_outcomes,
+                self.config,
+                window_start=start,
+                min_rank_score=self.config.min_rank_score,
+            )
             for threshold in self.config.sensitivity_score_thresholds:
-                filtered = [record for record in first.values() if float(record.get("rank_score") or 0) >= threshold]
-                filtered_ids = {
-                    record.get("canonical_asset_id") or record.get("contract_address")
-                    for record in filtered
-                }
-                completed = [
-                    item
-                    for item in outcomes
-                    if item.get("status") == "COMPLETED"
-                    and (item.get("canonical_asset_id") in filtered_ids)
+                first_at_threshold = _first_eligible_records(
+                    observations, min_rank_score=threshold
+                )
+                threshold_outcomes = [
+                    self._resolve_outcome(record, validate_setups=validate_setups)
+                    for record in first_at_threshold.values()
                 ]
+                summary = summarize_replay(
+                    observations,
+                    threshold_outcomes,
+                    self.config,
+                    window_start=start,
+                    min_rank_score=threshold,
+                )
+                completed = [item for item in threshold_outcomes if item.get("status") == "COMPLETED"]
                 meaningful = [item for item in completed if item.get("meaningful_move") is True]
                 results.append(
                     {
                         "cadence_hours": cadence_hours,
                         "min_rank_score": threshold,
-                        "eligible_detections": len(filtered),
-                        "outcome_coverage": round(len(completed) / len(filtered), 4) if filtered else 0.0,
+                        "eligible_detections": sum(
+                            _eligible_count(observation, min_rank_score=threshold)
+                            for observation in observations
+                        ),
+                        "outcome_coverage": round(
+                            len(completed) / len(first_at_threshold), 4
+                        )
+                        if first_at_threshold
+                        else 0.0,
                         "meaningful_move_precision": round(len(meaningful) / len(completed), 4) if completed else 0.0,
-                        "base_summary": summary,
+                        "base_summary": base_summary,
+                        "threshold_summary": summary,
                     }
                 )
         return results
@@ -647,74 +717,156 @@ def simulate_paper_setup(
     config: DiscoveryConfig,
     funding_rate: float | None,
 ) -> dict[str, Any]:
-    """Simulate conservative next-bar fills, costs, stops, and TP2 only."""
+    """Simulate a limit-zone paper setup with conservative OHLC execution.
+
+    The entry must actually trade through the selected edge of the entry zone;
+    otherwise the result is an explicit ``NO_FILL`` rather than a completed
+    trade.  Once filled, a candle touching both stop and target is resolved to
+    the stop first because intrabar ordering is unknown.
+    """
     future_frame = normalize_frame(future_frame)
     if not setup.valid or setup.direction not in {"long", "short"} or not setup.entry_zone:
         return {"status": "INSUFFICIENT DATA", "r_multiple": None}
-    if setup.invalidation is None or len(setup.targets) < 3 or future_frame.empty:
+    if (
+        setup.invalidation is None
+        or len(setup.targets) < 3
+        or future_frame.empty
+        or not {"high", "low", "close"}.issubset(future_frame.columns)
+    ):
         return {"status": "INSUFFICIENT DATA", "r_multiple": None}
     side = setup.direction
     raw_entry = _entry_from_zone(setup.entry_zone, side)
     if raw_entry is None:
         return {"status": "INSUFFICIENT DATA", "r_multiple": None}
-    slip = config.default_slippage_bps / 10_000
+    try:
+        stop = float(setup.invalidation)
+        tp2 = float(setup.targets[1])
+        if raw_entry <= 0 or stop <= 0 or tp2 <= 0:
+            return {"status": "INSUFFICIENT DATA", "r_multiple": None}
+    except (TypeError, ValueError):
+        return {"status": "INSUFFICIENT DATA", "r_multiple": None}
+    if (side == "long" and not stop < raw_entry < tp2) or (
+        side == "short" and not stop > raw_entry > tp2
+    ):
+        return {"status": "INSUFFICIENT DATA", "r_multiple": None}
+
+    slippage_bps = (
+        setup.slippage_bps
+        if setup.slippage_bps is not None
+        else config.default_slippage_bps
+    )
+    spread_bps = setup.spread_bps if setup.spread_bps is not None else 0.0
+    try:
+        slippage_bps = float(slippage_bps)
+        spread_bps = float(spread_bps)
+    except (TypeError, ValueError):
+        return {"status": "INSUFFICIENT DATA", "r_multiple": None}
+    if slippage_bps < 0 or spread_bps < 0 or config.funding_interval_hours <= 0:
+        return {"status": "INSUFFICIENT DATA", "r_multiple": None}
+
+    slip = slippage_bps / 10_000
     fee = config.fee_bps_per_side / 10_000
+    fill_position = None
+    fill_timestamp = None
+    for position, (timestamp, row) in enumerate(future_frame.iterrows()):
+        try:
+            high = float(row["high"])
+            low = float(row["low"])
+        except (TypeError, ValueError):
+            return {"status": "INSUFFICIENT DATA", "r_multiple": None}
+        if low <= raw_entry <= high:
+            fill_position = position
+            fill_timestamp = timestamp
+            break
+    if fill_position is None or fill_timestamp is None:
+        return {
+            "status": "NO_FILL",
+            "r_multiple": None,
+            "reason": "entry_zone_not_reached",
+        }
+
     entry = raw_entry * (1 + slip if side == "long" else 1 - slip)
-    stop = float(setup.invalidation)
-    tp2 = float(setup.targets[1])
-    stop_distance = abs(entry - stop)
+    stop_distance = abs(raw_entry - stop)
     if stop_distance <= 0:
         return {"status": "INSUFFICIENT DATA", "r_multiple": None}
-    exit_price = float(future_frame["close"].iloc[-1])
-    exit_timestamp = future_frame.index[-1]
+
+    exit_mid = None
+    exit_price = None
+    exit_timestamp = None
     exit_reason = "time_limit"
-    for timestamp, row in future_frame.iterrows():
-        high = float(row["high"])
-        low = float(row["low"])
+    filled_frame = future_frame.iloc[fill_position:]
+    for timestamp, row in filled_frame.iterrows():
+        try:
+            high = float(row["high"])
+            low = float(row["low"])
+            close = float(row["close"])
+        except (TypeError, ValueError):
+            return {"status": "INSUFFICIENT DATA", "r_multiple": None}
         if side == "long":
             # Stop first if both levels occur in one candle.
             if low <= stop:
+                exit_mid = stop
                 exit_price = stop * (1 - slip)
                 exit_timestamp = timestamp
                 exit_reason = "stop"
                 break
             if high >= tp2:
+                exit_mid = tp2
                 exit_price = tp2 * (1 - slip)
                 exit_timestamp = timestamp
                 exit_reason = "tp2"
                 break
         else:
             if high >= stop:
+                exit_mid = stop
                 exit_price = stop * (1 + slip)
                 exit_timestamp = timestamp
                 exit_reason = "stop"
                 break
             if low <= tp2:
+                exit_mid = tp2
                 exit_price = tp2 * (1 + slip)
                 exit_timestamp = timestamp
                 exit_reason = "tp2"
                 break
-        exit_price = float(row["close"])
+        exit_mid = close
+        exit_price = close * (1 - slip if side == "long" else 1 + slip)
         exit_timestamp = timestamp
-    holding_hours = max(0.0, (pd.Timestamp(exit_timestamp) - future_frame.index[0]).total_seconds() / 3600)
-    gross_return = ((exit_price - entry) / entry) if side == "long" else ((entry - exit_price) / entry)
+    if exit_mid is None or exit_price is None or exit_timestamp is None:
+        return {"status": "INSUFFICIENT DATA", "r_multiple": None}
+    holding_hours = max(
+        0.0,
+        (pd.Timestamp(exit_timestamp) - pd.Timestamp(fill_timestamp)).total_seconds() / 3600,
+    )
+    gross_return = (
+        (exit_mid - raw_entry) / raw_entry
+        if side == "long"
+        else (raw_entry - exit_mid) / raw_entry
+    )
     funding_cost = (funding_rate or 0.0) * holding_hours / config.funding_interval_hours
     signed_funding = funding_cost if side == "long" else -funding_cost
-    total_cost = 2 * fee + 2 * slip + signed_funding
+    fee_impact = 2 * fee
+    slippage_impact = 2 * slip
+    spread_impact = spread_bps / 10_000
+    total_cost = fee_impact + slippage_impact + spread_impact + signed_funding
     net_return = gross_return - total_cost
-    r_multiple = net_return / (stop_distance / entry)
+    r_multiple = net_return / (stop_distance / raw_entry)
     return {
         "status": "COMPLETED",
         "side": side,
+        "fill_timestamp": pd.Timestamp(fill_timestamp).isoformat(),
         "entry_price": entry,
         "exit_price": exit_price,
         "exit_timestamp": pd.Timestamp(exit_timestamp).isoformat(),
         "exit_reason": exit_reason,
         "holding_hours": holding_hours,
         "gross_return": gross_return,
-        "fee_impact": 2 * fee,
-        "slippage_impact": 2 * slip,
+        "fee_impact": fee_impact,
+        "slippage_impact": slippage_impact,
+        "spread_impact": spread_impact,
         "funding_impact": signed_funding,
+        "slippage_bps": slippage_bps,
+        "spread_bps": spread_bps,
         "net_return": net_return,
         "r_multiple": r_multiple,
         "turnover_notional_units": 2.0,
@@ -727,13 +879,26 @@ def summarize_replay(
     config: DiscoveryConfig,
     *,
     window_start: datetime | None = None,
+    min_rank_score: float | None = None,
 ) -> dict[str, Any]:
-    eligible = sum(int(item.get("eligible_count", 0)) for item in observations)
+    eligible = (
+        sum(
+            _eligible_count(observation, min_rank_score=min_rank_score)
+            for observation in observations
+        )
+        if min_rank_score is not None
+        else sum(int(item.get("eligible_count", 0)) for item in observations)
+    )
     first_eligible_count = len(outcomes)
     completed = [item for item in outcomes if item.get("status") == "COMPLETED"]
     meaningful = [item for item in completed if item.get("meaningful_move") is True]
     false_positives = [item for item in completed if item.get("meaningful_move") is False]
-    trades = [item["paper_trade"] for item in completed if isinstance(item.get("paper_trade"), dict)]
+    trades = [
+        item["paper_trade"]
+        for item in completed
+        if isinstance(item.get("paper_trade"), dict)
+        and item["paper_trade"].get("status") == "COMPLETED"
+    ]
     r_values = [float(item.get("r_multiple")) for item in trades if item.get("r_multiple") is not None]
     cumulative = 0.0
     peak = 0.0
@@ -770,7 +935,8 @@ def summarize_replay(
             else 0.0,
         },
         "meaningful_move_definition": {
-            "forward_return_abs_gte": config.meaningful_move_pct,
+            "forward_return_gte": config.meaningful_move_pct,
+            "directional": True,
             "horizon_hours": config.outcome_horizon_hours,
             "liquidity_gate": "candidate must pass the configured liquidity gate",
         },
@@ -868,25 +1034,31 @@ def _config_dict(config: DiscoveryConfig) -> dict[str, Any]:
 
 
 def _candidate_matches(candidate: DiscoveryCandidate, wanted: set[str]) -> bool:
-    return candidate.member.symbol in wanted or (
-        candidate.member.canonical_asset_id is not None
-        and candidate.member.canonical_asset_id.upper() in wanted
-    )
+    identity = candidate.member.identity_key
+    aliases = {
+        candidate.member.symbol,
+        candidate.member.canonical_asset_id.upper()
+        if candidate.member.canonical_asset_id
+        else None,
+        candidate.member.contract_address.upper()
+        if candidate.member.contract_address
+        else None,
+        identity.upper() if identity else None,
+    }
+    aliases.discard(None)
+    return bool(aliases & wanted)
 
 
-def _first_eligible_records(observations: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+def _first_eligible_records(
+    observations: list[dict[str, Any]], *, min_rank_score: float = 50.0
+) -> dict[str, dict[str, Any]]:
     first: dict[str, dict[str, Any]] = {}
     for observation in observations:
         for candidate in observation.get("candidates", []):
-            if candidate.get("ranking_state") != "ELIGIBLE":
+            if not _candidate_eligible_at_threshold(candidate, min_rank_score):
                 continue
-            raw_identity = candidate.get("canonical_asset_id") or candidate.get("contract_address")
-            identity = (
-                f"asset:{raw_identity.lower()}"
-                if candidate.get("canonical_asset_id")
-                else f"contract:{raw_identity.lower()}"
-                if raw_identity
-                else None
+            identity = identity_key_for(
+                candidate.get("canonical_asset_id"), candidate.get("contract_address")
             )
             if not identity or identity in first:
                 continue
@@ -894,6 +1066,27 @@ def _first_eligible_records(observations: list[dict[str, Any]]) -> dict[str, dic
             record["first_eligible_at"] = observation["observation_timestamp"]
             first[identity] = record
     return first
+
+
+def _candidate_eligible_at_threshold(candidate: dict[str, Any], min_rank_score: float) -> bool:
+    """Apply the ranking and liquidity gates at one sensitivity threshold."""
+    if candidate.get("liquidity", {}).get("state") != "PASS":
+        return False
+    if candidate.get("missingness"):
+        return False
+    score = candidate.get("rank_score")
+    return (
+        candidate.get("features", {}).get("return_7d") is not None
+        and score is not None
+        and float(score) >= min_rank_score
+    )
+
+
+def _eligible_count(observation: dict[str, Any], *, min_rank_score: float) -> int:
+    return sum(
+        _candidate_eligible_at_threshold(candidate, min_rank_score)
+        for candidate in observation.get("candidates", [])
+    )
 
 
 def _member_from_record(record: dict[str, Any]) -> UniverseMember:
@@ -906,7 +1099,7 @@ def _member_from_record(record: dict[str, Any]) -> UniverseMember:
         quote_currency=record.get("quote_currency"),
         observation_timestamp=as_utc(record.get("observation_timestamp") or record.get("first_eligible_at")),
         source_timestamp=as_utc(record["source_timestamp"]) if record.get("source_timestamp") else None,
-        available_at=None,
+        available_at=as_utc(record["available_at"]) if record.get("available_at") else None,
         universe_source=str(record.get("universe_source") or "offline_fixture"),
         data_completeness=str(record.get("data_completeness") or "complete"),
         missingness_reason=record.get("missingness_reason"),
@@ -917,13 +1110,14 @@ def _member_from_record(record: dict[str, Any]) -> UniverseMember:
             if record.get("rank") is not None
             else None
         ),
+        exchange_contract_type=str(record.get("exchange_contract_type") or "perpetual"),
     )
 
 
 def _target_is_canonical_id(target: str, matches: tuple[UniverseMember, ...]) -> bool:
     return any(
-        (member.canonical_asset_id and member.canonical_asset_id.upper() == target.upper())
-        or (member.contract_address and member.contract_address.upper() == target.upper())
+        (member.canonical_asset_id and member.canonical_asset_id.upper() == target.strip().upper())
+        or (member.contract_address and member.contract_address.upper() == target.strip().upper())
         for member in matches
     )
 
@@ -942,6 +1136,8 @@ def _paper_setup_kwargs(payload: dict[str, Any]) -> dict[str, Any]:
         "no_chase": payload.get("no_chase"),
         "blockers": tuple(payload.get("blockers") or []),
         "data_complete": payload.get("data_complete", True),
+        "slippage_bps": payload.get("slippage_bps"),
+        "spread_bps": payload.get("spread_bps"),
     }
 
 
@@ -975,8 +1171,23 @@ def _latest_funding(derivatives: pd.DataFrame | None, as_of: datetime) -> float 
     return None if pd.isna(value) else float(value)
 
 
-def _cost_pct(config: DiscoveryConfig, funding_rate: float | None, holding_intervals: float) -> float:
-    return 2 * (config.fee_bps_per_side + config.default_slippage_bps) / 10_000 + abs(funding_rate or 0.0) * holding_intervals
+def _cost_pct(
+    config: DiscoveryConfig,
+    funding_rate: float | None,
+    holding_intervals: float,
+    *,
+    slippage_bps: float | None = None,
+    spread_bps: float | None = None,
+) -> float:
+    effective_slippage = (
+        config.default_slippage_bps if slippage_bps is None else float(slippage_bps)
+    )
+    effective_spread = 0.0 if spread_bps is None else float(spread_bps)
+    return (
+        2 * (config.fee_bps_per_side + effective_slippage) / 10_000
+        + effective_spread / 10_000
+        + abs(funding_rate or 0.0) * holding_intervals
+    )
 
 
 def _net_rr(
@@ -985,12 +1196,21 @@ def _net_rr(
     tp2: float | None,
     funding_rate: float | None,
     config: DiscoveryConfig,
+    *,
+    slippage_bps: float | None = None,
+    spread_bps: float | None = None,
 ) -> float | None:
     if entry is None or invalidation is None or tp2 is None:
         return None
     risk = abs(entry - invalidation) / entry
     reward = abs(tp2 - entry) / entry
-    cost = _cost_pct(config, funding_rate, 1)
+    cost = _cost_pct(
+        config,
+        funding_rate,
+        1,
+        slippage_bps=slippage_bps,
+        spread_bps=spread_bps,
+    )
     return (reward - cost) / (risk + cost) if risk + cost > 0 else None
 
 

@@ -1,4 +1,4 @@
-"""Crypto momentum command group for BTC/ETH derivatives scans."""
+"""Crypto momentum commands for the existing scan and research discovery."""
 
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ from trading.crypto.momentum.service import MomentumMarketService
 from trading.crypto.analysis import CryptoAnalysisService
 from trading.crypto.analysis.daily_display import render_daily_entry_check, run_daily_entry_check
 
-crypto_app = ProfessionalTyper(help="Crypto BTC/ETH — use [bold]nave daily[/bold] for entry checks")
+crypto_app = ProfessionalTyper(help="Crypto momentum scans — use [bold]nave daily[/bold] for entry checks")
 DEFAULT_SCORE_THRESHOLD = load_momentum_config().score_tradeable_threshold
 DEFAULT_OPERATOR_SCORE_THRESHOLD = 90
 
@@ -41,6 +41,8 @@ def _build_scan_payload(
     risk_pct: float,
     score_threshold: int,
     apply_cadence_policy: bool,
+    include_universe_discovery: bool,
+    universe_size: int,
 ) -> dict:
     service = MomentumMarketService()
     return service.scan_live(
@@ -50,6 +52,8 @@ def _build_scan_payload(
         risk_pct=risk_pct,
         score_threshold=score_threshold,
         apply_cadence_policy=apply_cadence_policy,
+        include_universe_discovery=include_universe_discovery,
+        universe_size=universe_size,
     )
 
 
@@ -102,6 +106,19 @@ def _render_scan(payload: dict) -> None:
                 f"{plan['expected_move_pct'] * 100:.1f}",
             )
     console.print(table)
+    universe = payload.get("universe_discovery")
+    if isinstance(universe, dict):
+        console.print(
+            "\nCurrent universe discovery (research only): "
+            f"{universe.get('status', 'UNKNOWN')} at {universe.get('observation_timestamp', '—')}"
+        )
+        for candidate in (universe.get("top_candidates") or [])[:10]:
+            console.print(
+                f"  {candidate.get('symbol', '?')} · "
+                f"score={candidate.get('rank_score', '—')} · "
+                f"{candidate.get('ranking_state', 'UNKNOWN')} · "
+                f"liq={candidate.get('liquidity', {}).get('state', 'UNKNOWN')}"
+            )
 
 
 def _render_playbook(payload: dict) -> None:
@@ -153,6 +170,8 @@ def _run_scan_command(
     adaptive_threshold: bool,
     telegram_markdown_v2: bool,
     json_out: bool,
+    include_universe_discovery: bool,
+    universe_size: int,
 ) -> None:
     payload = _build_scan_payload(
         symbols=symbols,
@@ -161,6 +180,8 @@ def _run_scan_command(
         risk_pct=risk_pct,
         score_threshold=score_threshold,
         apply_cadence_policy=adaptive_threshold,
+        include_universe_discovery=include_universe_discovery,
+        universe_size=universe_size,
     )
     _emit_scan_payload(
         payload,
@@ -214,9 +235,20 @@ def momentum_scan(
         "--telegram-markdown-v2",
         help="Render Telegram-friendly MarkdownV2 digest (chunked).",
     ),
+    include_universe_discovery: bool = typer.Option(
+        True,
+        "--include-universe-discovery/--no-universe-discovery",
+        help="Append the current top-100 plus liquid-perpetual research pass (default on).",
+    ),
+    universe_size: int = typer.Option(
+        100,
+        "--universe-size",
+        min=1,
+        help="Current market-cap universe size for the research pass.",
+    ),
     json_out: bool = typer.Option(False, "--json", help="Emit JSON only."),
 ) -> None:
-    """Scan BTC/ETH derivatives for fresh momentum setups."""
+    """Scan derivatives and optionally append current-universe research."""
     _run_scan_command(
         symbols=symbols,
         tf=tf,
@@ -226,6 +258,8 @@ def momentum_scan(
         adaptive_threshold=adaptive_threshold,
         telegram_markdown_v2=telegram_markdown_v2,
         json_out=json_out,
+        include_universe_discovery=include_universe_discovery,
+        universe_size=universe_size,
     )
 
 
@@ -254,6 +288,17 @@ def scan(
         "--telegram-markdown-v2",
         help="Render Telegram-friendly MarkdownV2 digest (chunked).",
     ),
+    include_universe_discovery: bool = typer.Option(
+        True,
+        "--include-universe-discovery/--no-universe-discovery",
+        help="Append the current top-100 plus liquid-perpetual research pass (default on).",
+    ),
+    universe_size: int = typer.Option(
+        100,
+        "--universe-size",
+        min=1,
+        help="Current market-cap universe size for the research pass.",
+    ),
     json_out: bool = typer.Option(False, "--json", help="Emit JSON only."),
 ) -> None:
     """Default market scan: routes to the momentum engine."""
@@ -266,6 +311,8 @@ def scan(
         adaptive_threshold=adaptive_threshold,
         telegram_markdown_v2=telegram_markdown_v2,
         json_out=json_out,
+        include_universe_discovery=include_universe_discovery,
+        universe_size=universe_size,
     )
 
 
