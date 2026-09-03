@@ -4,15 +4,35 @@ from __future__ import annotations
 
 from typing import Any
 
-from trading.crypto.momentum.workflow import (
-    MOMENTUM_PERIOD_ORDER,
-    MOMENTUM_PERIODS,
-    run_period_backtest,
-    write_period_artifact,
-)
+MOMENTUM_PERIOD_ORDER = [
+    "2017-bull+2018-bear",
+    "2019-recovery",
+    "2020-covid-crash",
+    "2020-recovery+2021-ATH",
+    "2022-bear",
+    "2023-recovery",
+    "2024-ETF-approval",
+    "2024-2025-bull",
+    "TODAY",
+]
+MOMENTUM_PERIODS = {
+    "2017-bull+2018-bear": ("2017-01-01", "2018-12-31"),
+    "2019-recovery": ("2019-01-01", "2019-12-31"),
+    "2020-covid-crash": ("2020-01-01", "2020-06-30"),
+    "2020-recovery+2021-ATH": ("2020-07-01", "2021-12-31"),
+    "2022-bear": ("2022-01-01", "2022-12-31"),
+    "2023-recovery": ("2023-01-01", "2023-12-31"),
+    "2024-ETF-approval": ("2024-01-01", "2024-06-30"),
+    "2024-2025-bull": ("2024-07-01", "2025-03-31"),
+}
+HISTORICAL_PERIODS = [period for period in MOMENTUM_PERIOD_ORDER if period != "TODAY"]
 
 
-HISTORICAL_PERIODS = [p for p in MOMENTUM_PERIOD_ORDER if p != "TODAY"]
+def _workflow():
+    """Load the legacy file-backed workflow only for an explicit full backtest."""
+    from trading.crypto.momentum.workflow import run_period_backtest, write_period_artifact
+
+    return run_period_backtest, write_period_artifact
 
 
 def run_all_periods(
@@ -23,6 +43,7 @@ def run_all_periods(
     skip_baseline_compare: bool = False,
 ) -> dict[str, Any]:
     """Run momentum+COT historical backtest for every named regime."""
+    run_period_backtest, write_period_artifact = _workflow()
     periods = list(HISTORICAL_PERIODS)
     if include_today:
         periods.append("TODAY")
@@ -56,7 +77,6 @@ def summarize_backtests(payloads: dict[str, Any]) -> dict[str, Any]:
         metrics = pooled.get("metrics") or {}
         trade_count = int(pooled.get("trade_count", 0))
         expectancy = float(metrics.get("expectancy") or 0.0)
-        win_rate = float(metrics.get("win_rate") or 0.0)
         if trade_count > 0 and expectancy < 0:
             losing_periods.append(period)
 

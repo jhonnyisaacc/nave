@@ -10,10 +10,21 @@ import requests
 from trading.crypto.client import HyperliquidClient
 from trading.crypto.momentum import MomentumBacktester, MomentumSetupEngine, load_momentum_config
 from trading.crypto.momentum.config import CadenceConfig
+from trading.crypto.momentum.replay import (
+    ExistingMomentumSetupValidator,
+    FixtureMarketDataProvider,
+    UniverseMomentumReplay,
+    load_replay_fixture,
+)
 from trading.crypto.momentum.thesis import MomentumThesisStore, reconcile_momentum_theses
+from trading.crypto.momentum.universe import (
+    CurrentUniverseProvider,
+    deduplicate_members,
+)
 
 
 BINANCE_FAPI_URL = "https://fapi.binance.com"
+COINGECKO_MARKETS_URL = "https://api.coingecko.com/api/v3/coins/markets"
 SUPPORTED_TRIGGER_TIMEFRAMES = {"1h", "15m"}
 
 
@@ -124,6 +135,38 @@ def _active_thesis_count(payload: dict[str, Any]) -> int:
     )
 
 
+def _estimate_l2_costs(book: dict[str, Any]) -> tuple[float | None, float | None]:
+    """Estimate spread and one-way slippage from the best L2 quotes.
+
+    Depth-sensitive execution is outside this read-only discovery layer. The
+    returned slippage estimate is therefore the conservative half-spread proxy
+    and is labelled as an estimate in the current-scan payload.
+    """
+    levels = book.get("levels") if isinstance(book, dict) else None
+    if not isinstance(levels, list) or len(levels) < 2:
+        return None, None
+    try:
+        bid = float(levels[0][0]["px"])
+        ask = float(levels[1][0]["px"])
+    except (IndexError, KeyError, TypeError, ValueError):
+        return None, None
+    midpoint = (bid + ask) / 2
+    if bid <= 0 or ask <= 0 or ask < bid or midpoint <= 0:
+        return None, None
+    spread_bps = (ask - bid) / midpoint * 10_000
+    return spread_bps, spread_bps / 2
+
+
+def _quote_volume_from_candles(frame: pd.DataFrame) -> float | None:
+    if frame is None or frame.empty or not {"close", "volume"}.issubset(frame.columns):
+        return None
+    try:
+        values = frame[["close", "volume"]].tail(24).astype(float)
+        return float((values["close"] * values["volume"]).sum())
+    except (TypeError, ValueError):
+        return None
+
+
 class MomentumMarketService:
     def __init__(
         self,
@@ -154,6 +197,9 @@ class MomentumMarketService:
         risk_pct: float | None = None,
         score_threshold: int | None = None,
         apply_cadence_policy: bool = False,
+        include_universe_discovery: bool = False,
+        universe_size: int = 100,
+        universe_max_candidates: int = 25,
     ) -> dict[str, Any]:
         plans_by_symbol: dict[str, dict[str, Any]] = {}
         current_prices: dict[str, float] = {}
@@ -203,7 +249,7 @@ class MomentumMarketService:
             results_out,
             threshold=effective_threshold,
         )
-        return {
+        payload = {
             "generated_at": datetime.now(timezone.utc).isoformat(),
             "strategy": "derivatives_momentum_v1",
             "symbols": symbols,
@@ -234,6 +280,166 @@ class MomentumMarketService:
             },
             "results": results_out,
         }
+        if include_universe_discovery:
+            payload["universe_discovery"] = self.scan_current_universe_discovery(
+                universe_size=universe_size,
+                max_candidates=universe_max_candidates,
+            )
+        return payload
+
+    def scan_current_universe_discovery(
+        self,
+        *,
+        universe_size: int = 100,
+        max_candidates: int = 25,
+        config_path: str | None = None,
+    ) -> dict[str, Any]:
+        """Add a current, read-only discovery pass to the existing scan.
+
+        CoinGecko supplies the current market-cap ordering and Hyperliquid
+        supplies current perpetual metadata. Historical replay remains
+        fixture/provider based; this method never uses the current ordering for
+        a historical observation.
+        """
+        from trading.crypto.momentum.discovery import (
+            AssetMarketData,
+            load_discovery_config,
+            rank_universe,
+        )
+
+        if universe_size <= 0 or max_candidates <= 0:
+            raise ValueError("universe_size and max_candidates must be positive")
+        observed_at = datetime.now(timezone.utc).replace(microsecond=0)
+        try:
+            market_cap_rows = self.fetch_current_market_cap_rows(universe_size)
+            metadata = self.market_client.get_meta()
+            contracts = metadata.get("universe", []) if isinstance(metadata, dict) else []
+            if not market_cap_rows or not isinstance(contracts, list):
+                raise ValueError("current market-cap or perpetual metadata is unavailable")
+            universe_provider = CurrentUniverseProvider.from_market_cap_rows(
+                market_cap_rows,
+                contracts,
+                observation_timestamp=observed_at,
+            )
+            snapshot = universe_provider.snapshot_at(observed_at, universe_size=universe_size)
+        except (requests.RequestException, AttributeError, TypeError, ValueError) as exc:
+            return {
+                "mode": "current_research_only",
+                "status": "PROVIDER_UNAVAILABLE",
+                "observation_timestamp": observed_at.isoformat(),
+                "unknowns": [str(exc)],
+                "provider": {
+                    "market_cap": COINGECKO_MARKETS_URL,
+                    "perpetual_metadata": "hyperliquid:meta",
+                },
+                "candidates": [],
+            }
+
+        members = deduplicate_members(snapshot.members)
+        data_by_identity: dict[str, Any] = {}
+        data_unknowns: dict[str, str] = {}
+        timeframes = MomentumTimeframes(bias="1d", setup="4h", trigger="1h")
+        for member in members:
+            if not member.identity_key or not member.contract_symbol:
+                if member.identity_key:
+                    data_unknowns[member.identity_key] = "perpetual_contract_symbol_unavailable"
+                continue
+            try:
+                frames = self.load_historical_frames(
+                    member.contract_symbol,
+                    timeframes,
+                    lookback_days=30,
+                )
+                trigger = frames["trigger"]
+                quote_volume = _quote_volume_from_candles(trigger)
+                open_interest = frames.get("open_interest")
+                if open_interest is not None and not open_interest.empty:
+                    derivatives = open_interest.copy()
+                else:
+                    derivatives = pd.DataFrame(
+                        {"timestamp": [observed_at], "open_interest": [None]}
+                    )
+                derivatives["quote_volume_24h"] = quote_volume
+                derivatives["funding_rate"] = frames.get("funding_rate")
+                try:
+                    spread_bps, slippage_bps = _estimate_l2_costs(
+                        self.market_client.get_l2_book(member.contract_symbol)
+                    )
+                except (AttributeError, requests.RequestException, TypeError, ValueError):
+                    spread_bps, slippage_bps = None, None
+                derivatives["spread_bps"] = spread_bps
+                derivatives["slippage_bps"] = slippage_bps
+                data_by_identity[member.identity_key] = AssetMarketData(
+                    frames={
+                        "1d": frames["daily"],
+                        "4h": frames["setup"],
+                        "1h": frames["trigger"],
+                    },
+                    derivatives=derivatives,
+                    source="hyperliquid_candles_and_binance_derivatives",
+                    source_timestamp=observed_at,
+                )
+            except (KeyError, TypeError, ValueError, requests.RequestException) as exc:
+                data_unknowns[member.identity_key] = str(exc)
+
+        discovery_config = load_discovery_config(config_path)
+        candidates = rank_universe(
+            members,
+            data_by_identity,
+            observed_at,
+            config=discovery_config,
+        )
+        validator = ExistingMomentumSetupValidator()
+        serialized_candidates: list[dict[str, Any]] = []
+        for candidate in candidates:
+            serialized = candidate.to_dict()
+            if candidate.eligible and candidate.member.identity_key:
+                market = data_by_identity.get(candidate.member.identity_key)
+                if market is not None:
+                    serialized["setup_validation"] = validator.validate(
+                        candidate, market, observed_at, discovery_config
+                    ).to_dict()
+            serialized_candidates.append(serialized)
+        return {
+            "mode": "current_research_only",
+            "status": "OK",
+            "observation_timestamp": observed_at.isoformat(),
+            "universe": snapshot.to_dict(),
+            "candidates": serialized_candidates,
+            "top_candidates": serialized_candidates[:max_candidates],
+            "candidate_count": len(serialized_candidates),
+            "eligible_count": sum(
+                candidate.get("ranking_state") == "ELIGIBLE"
+                for candidate in serialized_candidates
+            ),
+            "data_unknowns": data_unknowns,
+            "assumptions": {
+                "market_cap_source": "CoinGecko current markets endpoint",
+                "perpetual_source": "Hyperliquid current metadata",
+                "slippage_estimate": "half of best-bid/ask spread; depth is not imputed",
+                "historical_reuse": False,
+                "execution": "research-only; no orders, alerts, wallets, or permissions are touched",
+            },
+        }
+
+    def fetch_current_market_cap_rows(self, universe_size: int) -> list[dict[str, Any]]:
+        """Fetch one current market-cap page; failures remain provider failures."""
+        response = self.session.get(
+            COINGECKO_MARKETS_URL,
+            params={
+                "vs_currency": "usd",
+                "order": "market_cap_desc",
+                "per_page": universe_size,
+                "page": 1,
+                "sparkline": "false",
+            },
+            timeout=10,
+        )
+        response.raise_for_status()
+        payload = response.json()
+        if not isinstance(payload, list):
+            raise ValueError("current market-cap provider returned a non-list payload")
+        return [row for row in payload if isinstance(row, dict) and row.get("id")]
 
     def playbook_live(
         self,
@@ -308,6 +514,51 @@ class MomentumMarketService:
             },
             "results": results,
         }
+
+    def research_universe_momentum_scan(
+        self,
+        *,
+        fixture_path: str,
+        start: str,
+        end: str,
+        cadence: str = "6h",
+        universe_size: int = 100,
+        symbols: list[str] | None = None,
+        config_path: str | None = None,
+        validate_setups: bool = True,
+        include_sensitivity: bool = True,
+        max_candidates: int = 25,
+    ) -> dict[str, Any]:
+        """Run the research-only point-in-time universe replay.
+
+        ``fixture_path`` is explicit by design.  This method never calls the
+        live exchange client and never substitutes a current universe for a
+        historical observation.
+        """
+        from trading.crypto.momentum.discovery import load_discovery_config
+
+        fixture = load_replay_fixture(fixture_path)
+        replay = UniverseMomentumReplay(
+            fixture.universe_provider,
+            FixtureMarketDataProvider(fixture.market_data),
+            config=load_discovery_config(config_path),
+        )
+        payload = replay.run(
+            start=start,
+            end=end,
+            cadence=cadence,
+            universe_size=universe_size,
+            symbols=symbols,
+            validate_setups=validate_setups,
+            include_sensitivity=include_sensitivity,
+            max_candidates=max_candidates,
+        )
+        payload["provider"] = {
+            "kind": "offline_fixture",
+            "path": str(fixture_path),
+            "metadata": fixture.metadata,
+        }
+        return payload
 
     def load_live_frames(self, symbol: str, timeframes: MomentumTimeframes) -> dict[str, Any]:
         return self.load_historical_frames(symbol, timeframes, lookback_days=120)
