@@ -10,6 +10,7 @@ import requests
 from trading.crypto.client import HyperliquidClient
 from trading.crypto.momentum import MomentumBacktester, MomentumSetupEngine, load_momentum_config
 from trading.crypto.momentum.config import CadenceConfig
+from trading.crypto.momentum.replay import FixtureMarketDataProvider, load_replay_fixture, UniverseMomentumReplay
 from trading.crypto.momentum.thesis import MomentumThesisStore, reconcile_momentum_theses
 
 
@@ -308,6 +309,51 @@ class MomentumMarketService:
             },
             "results": results,
         }
+
+    def research_universe_momentum_scan(
+        self,
+        *,
+        fixture_path: str,
+        start: str,
+        end: str,
+        cadence: str = "6h",
+        universe_size: int = 100,
+        symbols: list[str] | None = None,
+        config_path: str | None = None,
+        validate_setups: bool = True,
+        include_sensitivity: bool = True,
+        max_candidates: int = 25,
+    ) -> dict[str, Any]:
+        """Run the research-only point-in-time universe replay.
+
+        ``fixture_path`` is explicit by design.  This method never calls the
+        live exchange client and never substitutes a current universe for a
+        historical observation.
+        """
+        from trading.crypto.momentum.discovery import load_discovery_config
+
+        fixture = load_replay_fixture(fixture_path)
+        replay = UniverseMomentumReplay(
+            fixture.universe_provider,
+            FixtureMarketDataProvider(fixture.market_data),
+            config=load_discovery_config(config_path),
+        )
+        payload = replay.run(
+            start=start,
+            end=end,
+            cadence=cadence,
+            universe_size=universe_size,
+            symbols=symbols,
+            validate_setups=validate_setups,
+            include_sensitivity=include_sensitivity,
+            max_candidates=max_candidates,
+        )
+        payload["provider"] = {
+            "kind": "offline_fixture",
+            "path": str(fixture_path),
+            "metadata": fixture.metadata,
+        }
+        return payload
 
     def load_live_frames(self, symbol: str, timeframes: MomentumTimeframes) -> dict[str, Any]:
         return self.load_historical_frames(symbol, timeframes, lookback_days=120)

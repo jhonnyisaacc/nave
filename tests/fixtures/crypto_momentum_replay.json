@@ -1,0 +1,72 @@
+{
+  "schema_version": "crypto-momentum-replay-fixture.v1",
+  "metadata": {
+    "source": "offline_fixture",
+    "synthetic": true,
+    "description": "Deterministic contract fixture, not observed market evidence.",
+    "availability_assumption": "Every generated row is available at its timestamp; snapshots require available_at <= observation_timestamp.",
+    "window_note": "The CLI example replays 2026-08-25 through 2026-09-01; forward rows extend past the window only to exercise outcome coverage."
+  },
+  "universe_snapshots": [
+    {
+      "observation_timestamp": "2026-08-24T00:00:00Z",
+      "source_timestamp": "2026-08-24T00:00:00Z",
+      "available_at": "2026-08-24T00:05:00Z",
+      "source": "offline_fixture",
+      "point_in_time_valid": true,
+      "members": [
+        {"symbol": "BTC", "canonical_asset_id": "bitcoin", "venue": "hyperliquid", "contract_symbol": "BTC", "quote_currency": "USDC", "universe_source": "historical_top_market_cap", "rank": 1},
+        {"symbol": "ETH", "canonical_asset_id": "ethereum", "venue": "hyperliquid", "contract_symbol": "ETH", "quote_currency": "USDC", "universe_source": "historical_top_market_cap", "rank": 2},
+        {"symbol": "ARB", "canonical_asset_id": "arbitrum", "venue": "hyperliquid", "contract_symbol": "ARB", "quote_currency": "USDC", "universe_source": "historical_top_market_cap", "rank": 40},
+        {"symbol": "ARB", "canonical_asset_id": "arbitrum", "venue": "binance", "contract_symbol": "ARBUSDT", "quote_currency": "USDT", "universe_source": "liquid_perpetual"},
+        {"symbol": "CAKE", "canonical_asset_id": "pancakeswap-token", "venue": "hyperliquid", "contract_symbol": "CAKE", "quote_currency": "USDC", "universe_source": "historical_top_market_cap", "rank": 70},
+        {"symbol": "CRV", "canonical_asset_id": "curve-dao-token", "venue": "hyperliquid", "contract_symbol": "CRV", "quote_currency": "USDC", "universe_source": "historical_top_market_cap", "rank": 80},
+        {"symbol": "TWT", "canonical_asset_id": "trust-wallet-token", "venue": "hyperliquid", "contract_symbol": "TWT", "quote_currency": "USDC", "universe_source": "historical_top_market_cap", "rank": 90},
+        {"symbol": "EDGE", "canonical_asset_id": "edge-protocol", "venue": "hyperliquid", "contract_symbol": "EDGE", "quote_currency": "USDC", "universe_source": "historical_top_market_cap", "rank": 95},
+        {"symbol": "EDGE", "canonical_asset_id": "edge-network", "venue": "binance", "contract_symbol": "EDGEUSDT", "quote_currency": "USDT", "universe_source": "historical_top_market_cap", "rank": 96},
+        {"symbol": "PONS", "canonical_asset_id": "pons-network", "venue": "hyperliquid", "contract_symbol": "PONS", "quote_currency": "USDC", "universe_source": "liquid_perpetual"},
+        {"symbol": "OTHER", "canonical_asset_id": "outside-top-100", "venue": "hyperliquid", "contract_symbol": "OTHER", "quote_currency": "USDC", "universe_source": "historical_top_market_cap", "rank": 101}
+      ]
+    },
+    {
+      "observation_timestamp": "2026-08-29T00:00:00Z",
+      "source_timestamp": "2026-08-29T00:00:00Z",
+      "available_at": "2026-08-29T00:05:00Z",
+      "source": "offline_fixture",
+      "point_in_time_valid": true,
+      "members": [
+        {"symbol": "BTC", "canonical_asset_id": "bitcoin", "venue": "hyperliquid", "contract_symbol": "BTC", "quote_currency": "USDC", "universe_source": "historical_top_market_cap", "rank": 1},
+        {"symbol": "ETH", "canonical_asset_id": "ethereum", "venue": "hyperliquid", "contract_symbol": "ETH", "quote_currency": "USDC", "universe_source": "historical_top_market_cap", "rank": 2},
+        {"symbol": "ARB", "canonical_asset_id": "arbitrum", "venue": "hyperliquid", "contract_symbol": "ARB", "quote_currency": "USDC", "universe_source": "historical_top_market_cap", "rank": 38},
+        {"symbol": "ARB", "canonical_asset_id": "arbitrum", "venue": "binance", "contract_symbol": "ARBUSDT", "quote_currency": "USDT", "universe_source": "liquid_perpetual"},
+        {"symbol": "CAKE", "canonical_asset_id": "pancakeswap-token", "venue": "hyperliquid", "contract_symbol": "CAKE", "quote_currency": "USDC", "universe_source": "historical_top_market_cap", "rank": 73},
+        {"symbol": "CRV", "canonical_asset_id": "curve-dao-token", "venue": "hyperliquid", "contract_symbol": "CRV", "quote_currency": "USDC", "universe_source": "historical_top_market_cap", "rank": 79},
+        {"symbol": "TWT", "canonical_asset_id": "trust-wallet-token", "venue": "hyperliquid", "contract_symbol": "TWT", "quote_currency": "USDC", "universe_source": "historical_top_market_cap", "rank": 88},
+        {"symbol": "EDGE", "canonical_asset_id": "edge-protocol", "venue": "hyperliquid", "contract_symbol": "EDGE", "quote_currency": "USDC", "universe_source": "historical_top_market_cap", "rank": 95},
+        {"symbol": "EDGE", "canonical_asset_id": "edge-network", "venue": "binance", "contract_symbol": "EDGEUSDT", "quote_currency": "USDT", "universe_source": "historical_top_market_cap", "rank": 96},
+        {"symbol": "PONS", "canonical_asset_id": "pons-network", "venue": "hyperliquid", "contract_symbol": "PONS", "quote_currency": "USDC", "universe_source": "liquid_perpetual"}
+      ]
+    },
+    {
+      "observation_timestamp": "2026-09-02T00:00:00Z",
+      "source_timestamp": "2026-09-02T00:00:00Z",
+      "available_at": "2026-09-02T00:05:00Z",
+      "source": "offline_fixture_current_snapshot",
+      "point_in_time_valid": true,
+      "members": [
+        {"symbol": "FUTURE", "canonical_asset_id": "future-only-asset", "venue": "hyperliquid", "contract_symbol": "FUTURE", "quote_currency": "USDC", "universe_source": "historical_top_market_cap", "rank": 1}
+      ]
+    }
+  ],
+  "market_data": {
+    "bitcoin": {"canonical_asset_id": "bitcoin", "source": "offline_fixture", "candles": {"1h": {"start": "2026-08-10T00:00:00Z", "periods": 720, "base": 100, "trend_per_bar": 0.0002, "wave_amplitude": 0.002, "volume_base": 1200000, "volume_trend_per_bar": 0.001}, "4h": {"start": "2026-08-10T00:00:00Z", "periods": 180, "interval": "4h", "base": 100, "trend_per_bar": 0.0008, "wave_amplitude": 0.003, "volume_base": 5000000}, "1d": {"start": "2026-08-10T00:00:00Z", "periods": 35, "interval": "1d", "base": 100, "trend_per_bar": 0.003, "volume_base": 10000000}}, "derivatives": {"start": "2026-08-10T00:00:00Z", "periods": 120, "quote_volume_24h": 250000000, "open_interest": 100000000, "funding_rate": 0.00001, "spread_bps": 2, "slippage_bps": 2, "basis_bps": 4}},
+    "ethereum": {"canonical_asset_id": "ethereum", "source": "offline_fixture", "candles": {"1h": {"start": "2026-08-10T00:00:00Z", "periods": 720, "base": 80, "trend_per_bar": 0.00015, "wave_amplitude": 0.002, "volume_base": 1000000, "volume_trend_per_bar": 0.001}, "4h": {"start": "2026-08-10T00:00:00Z", "periods": 180, "interval": "4h", "base": 80, "trend_per_bar": 0.0006, "wave_amplitude": 0.003, "volume_base": 4000000}, "1d": {"start": "2026-08-10T00:00:00Z", "periods": 35, "interval": "1d", "base": 80, "trend_per_bar": 0.002, "volume_base": 9000000}}, "derivatives": {"start": "2026-08-10T00:00:00Z", "periods": 120, "quote_volume_24h": 180000000, "open_interest": 80000000, "funding_rate": 0.00001, "spread_bps": 3, "slippage_bps": 3, "basis_bps": 5}},
+    "arbitrum": {"canonical_asset_id": "arbitrum", "source": "offline_fixture", "candles": {"1h": {"start": "2026-08-10T00:00:00Z", "periods": 720, "base": 2, "trend_per_bar": 0.0005, "wave_amplitude": 0.004, "volume_base": 900000, "volume_trend_per_bar": 0.0015}, "4h": {"start": "2026-08-10T00:00:00Z", "periods": 180, "interval": "4h", "base": 2, "trend_per_bar": 0.002, "wave_amplitude": 0.005, "volume_base": 3000000}, "1d": {"start": "2026-08-10T00:00:00Z", "periods": 35, "interval": "1d", "base": 2, "trend_per_bar": 0.006, "volume_base": 7000000}}, "derivatives": {"start": "2026-08-10T00:00:00Z", "periods": 120, "quote_volume_24h": 25000000, "open_interest": 8000000, "funding_rate": 0.00002, "spread_bps": 8, "slippage_bps": 10, "basis_bps": 12}},
+    "pancakeswap-token": {"canonical_asset_id": "pancakeswap-token", "source": "offline_fixture", "candles": {"1h": {"start": "2026-08-10T00:00:00Z", "periods": 720, "base": 4, "trend_per_bar": 0.00035, "wave_amplitude": 0.004, "volume_base": 700000, "volume_trend_per_bar": 0.001}, "4h": {"start": "2026-08-10T00:00:00Z", "periods": 180, "interval": "4h", "base": 4, "trend_per_bar": 0.0014, "wave_amplitude": 0.005, "volume_base": 2500000}, "1d": {"start": "2026-08-10T00:00:00Z", "periods": 35, "interval": "1d", "base": 4, "trend_per_bar": 0.004, "volume_base": 6000000}}, "derivatives": {"start": "2026-08-10T00:00:00Z", "periods": 120, "quote_volume_24h": 15000000, "open_interest": 4000000, "funding_rate": 0.000015, "spread_bps": 10, "slippage_bps": 12, "basis_bps": 10}},
+    "curve-dao-token": {"canonical_asset_id": "curve-dao-token", "source": "offline_fixture", "candles": {"1h": {"start": "2026-08-10T00:00:00Z", "periods": 720, "base": 1.5, "trend_per_bar": 0.00025, "wave_amplitude": 0.004, "volume_base": 650000, "volume_trend_per_bar": 0.001}, "4h": {"start": "2026-08-10T00:00:00Z", "periods": 180, "interval": "4h", "base": 1.5, "trend_per_bar": 0.001, "wave_amplitude": 0.005, "volume_base": 2200000}, "1d": {"start": "2026-08-10T00:00:00Z", "periods": 35, "interval": "1d", "base": 1.5, "trend_per_bar": 0.003, "volume_base": 5000000}}, "derivatives": {"start": "2026-08-10T00:00:00Z", "periods": 120, "quote_volume_24h": 12000000, "open_interest": 3000000, "funding_rate": 0.00001, "spread_bps": 12, "slippage_bps": 15, "basis_bps": 14}},
+    "trust-wallet-token": {"canonical_asset_id": "trust-wallet-token", "source": "offline_fixture", "candles": {"1h": {"start": "2026-08-10T00:00:00Z", "periods": 720, "base": 1, "trend_per_bar": 0.00045, "wave_amplitude": 0.004, "volume_base": 600000, "volume_trend_per_bar": 0.0015}, "4h": {"start": "2026-08-10T00:00:00Z", "periods": 180, "interval": "4h", "base": 1, "trend_per_bar": 0.0018, "wave_amplitude": 0.005, "volume_base": 2100000}, "1d": {"start": "2026-08-10T00:00:00Z", "periods": 35, "interval": "1d", "base": 1, "trend_per_bar": 0.005, "volume_base": 5000000}}, "derivatives": {"start": "2026-08-10T00:00:00Z", "periods": 120, "quote_volume_24h": 11000000, "open_interest": 2500000, "funding_rate": 0.00002, "spread_bps": 14, "slippage_bps": 18, "basis_bps": 16}},
+    "edge-protocol": {"canonical_asset_id": "edge-protocol", "source": "offline_fixture", "candles": {"1h": {"start": "2026-08-10T00:00:00Z", "periods": 720, "base": 3, "trend_per_bar": 0.0003, "wave_amplitude": 0.004, "volume_base": 500000, "volume_trend_per_bar": 0.001}, "4h": {"start": "2026-08-10T00:00:00Z", "periods": 180, "interval": "4h", "base": 3, "trend_per_bar": 0.0012, "wave_amplitude": 0.005, "volume_base": 1800000}, "1d": {"start": "2026-08-10T00:00:00Z", "periods": 35, "interval": "1d", "base": 3, "trend_per_bar": 0.003, "volume_base": 4000000}}, "derivatives": {"start": "2026-08-10T00:00:00Z", "periods": 120, "quote_volume_24h": 9000000, "open_interest": 2000000, "funding_rate": 0.00002, "spread_bps": 18, "slippage_bps": 24, "basis_bps": 18}},
+    "edge-network": {"canonical_asset_id": "edge-network", "source": "offline_fixture", "candles": {"1h": {"start": "2026-08-10T00:00:00Z", "periods": 720, "base": 3.5, "trend_per_bar": 0.0001, "wave_amplitude": 0.004, "volume_base": 300000, "volume_trend_per_bar": 0.001}, "4h": {"start": "2026-08-10T00:00:00Z", "periods": 180, "interval": "4h", "base": 3.5, "trend_per_bar": 0.0004, "wave_amplitude": 0.005, "volume_base": 1500000}, "1d": {"start": "2026-08-10T00:00:00Z", "periods": 35, "interval": "1d", "base": 3.5, "trend_per_bar": 0.001, "volume_base": 3500000}}, "derivatives": {"start": "2026-08-10T00:00:00Z", "periods": 120, "quote_volume_24h": 3000000, "open_interest": 500000, "funding_rate": 0.00003, "spread_bps": 30, "slippage_bps": 40, "basis_bps": 20}},
+    "pons-network": {"canonical_asset_id": "pons-network", "source": "offline_fixture", "candles": {"1h": {"start": "2026-08-10T00:00:00Z", "periods": 720, "base": 0.5, "trend_per_bar": 0.0002, "wave_amplitude": 0.004, "volume_base": 200000, "volume_trend_per_bar": 0.001}, "4h": {"start": "2026-08-10T00:00:00Z", "periods": 180, "interval": "4h", "base": 0.5, "trend_per_bar": 0.0008, "wave_amplitude": 0.005, "volume_base": 1000000}, "1d": {"start": "2026-08-10T00:00:00Z", "periods": 35, "interval": "1d", "base": 0.5, "trend_per_bar": 0.002, "volume_base": 2500000}}, "derivatives": {"start": "2026-08-10T00:00:00Z", "periods": 120, "quote_volume_24h": 1000000, "open_interest": 100000, "funding_rate": 0.00005, "spread_bps": 40, "slippage_bps": 60, "basis_bps": 30}}
+  }
+}

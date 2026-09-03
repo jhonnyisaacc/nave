@@ -208,6 +208,49 @@ def render_entry_zone_alert_markdown_v2(event: dict[str, Any]) -> str:
     )
 
 
+def render_universe_momentum_scan(payload: dict[str, Any], *, max_rows: int = 20) -> str:
+    """Render a human-readable research replay without action language."""
+    lines = [
+        "Crypto universe momentum discovery (research only)",
+        f"Window: {payload.get('window', {}).get('start', '—')} -> {payload.get('window', {}).get('end', '—')}",
+        f"Hypothesis: {payload.get('hypothesis', '—')}",
+        "",
+    ]
+    metrics = payload.get("metrics") if isinstance(payload.get("metrics"), dict) else {}
+    coverage = metrics.get("candidate_coverage") if isinstance(metrics.get("candidate_coverage"), dict) else {}
+    precision = metrics.get("precision") if isinstance(metrics.get("precision"), dict) else {}
+    lines.extend(
+        [
+            f"Eligible detections: {coverage.get('eligible_detections', 0)}",
+            f"Outcome coverage: {coverage.get('outcome_coverage', 0):.1%}",
+            f"Meaningful-move precision: {precision.get('meaningful_move_precision', 0):.1%}",
+            "",
+            "Latest ranked observations:",
+        ]
+    )
+    observations = payload.get("observations") if isinstance(payload.get("observations"), list) else []
+    latest = observations[-1] if observations else {}
+    rows = latest.get("top_candidates") or latest.get("candidates") or []
+    for candidate in rows[:max_rows]:
+        if not isinstance(candidate, dict):
+            continue
+        lines.append(
+            " · ".join(
+                [
+                    str(candidate.get("symbol") or "?"),
+                    f"score={candidate.get('rank_score') if candidate.get('rank_score') is not None else '—'}",
+                    str(candidate.get("ranking_state") or "UNKNOWN"),
+                    f"liq={candidate.get('liquidity', {}).get('state', 'UNKNOWN')}",
+                ]
+            )
+        )
+    lines.extend(["", "Target audit:"])
+    for target in payload.get("target_report", [])[:max_rows]:
+        if isinstance(target, dict):
+            lines.append(f"{target.get('target', '?')}: {target.get('status', 'UNKNOWN')}")
+    return "\n".join(lines)
+
+
 def _count_confirmed(results: dict[str, Any]) -> int:
     count = 0
     for entry in results.values():

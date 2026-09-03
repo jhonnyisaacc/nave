@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import Any
 
 import typer
@@ -11,6 +12,7 @@ from rich.table import Table
 
 from cli.professional_typer import ProfessionalTyper
 from trading.crypto.momentum import load_momentum_config
+from trading.crypto.momentum.formatters import render_universe_momentum_scan
 from trading.crypto.momentum.service import MomentumMarketService
 from trading.crypto.analysis import CryptoAnalysisService
 from trading.crypto.analysis.daily_display import render_daily_entry_check, run_daily_entry_check
@@ -419,3 +421,48 @@ def momentum_backtest(
             f"{delta.get('expectancy', 0.0):+.2f}",
         )
     console.print(table)
+
+
+@crypto_app.command("universe-momentum-scan")
+def universe_momentum_scan(
+    fixture: Path = typer.Option(
+        ...,
+        "--fixture",
+        exists=True,
+        dir_okay=False,
+        readable=True,
+        help="Explicit offline point-in-time fixture; no current-universe fallback exists.",
+    ),
+    start: str = typer.Option(..., "--start", help="UTC observation-window start."),
+    end: str = typer.Option(..., "--end", help="UTC observation-window end."),
+    symbols: str = typer.Option(
+        "ARB,CAKE,CRV,TWT,EDGE,PONS",
+        "--symbols",
+        help="Target tickers or canonical asset IDs for the audit.",
+    ),
+    cadence: str = typer.Option("6h", "--cadence", help="Observation cadence, e.g. 3h or 6h."),
+    universe_size: int = typer.Option(100, "--universe-size", min=1),
+    config: Path | None = typer.Option(None, "--config", exists=True, dir_okay=False),
+    validate_setups: bool = typer.Option(True, "--validate-setups/--no-validate-setups"),
+    sensitivity: bool = typer.Option(True, "--sensitivity/--no-sensitivity"),
+    max_candidates: int = typer.Option(25, "--max-candidates", min=1),
+    json_out: bool = typer.Option(False, "--json", help="Emit JSON only."),
+) -> None:
+    """Replay point-in-time top-100 plus liquid-perpetual discovery offline."""
+    target_symbols = [part.strip().upper() for part in symbols.replace(" ", ",").split(",") if part.strip()]
+    payload = MomentumMarketService().research_universe_momentum_scan(
+        fixture_path=str(fixture),
+        start=start,
+        end=end,
+        cadence=cadence,
+        universe_size=universe_size,
+        symbols=target_symbols or None,
+        config_path=str(config) if config is not None else None,
+        validate_setups=validate_setups,
+        include_sensitivity=sensitivity,
+        max_candidates=max_candidates,
+    )
+    if json_out:
+        typer.echo(json.dumps(payload, indent=2, default=_json_default))
+        return
+    typer.echo(render_universe_momentum_scan(payload, max_rows=max_candidates))

@@ -123,6 +123,12 @@ python -m trading.crypto.client positions --wallet hermes
 python -m trading.crypto.client orders --wallet hermes
 python -m trading.crypto.client mids --wallet hermes
 python -m trading.crypto.client markets --wallet hermes
+
+# Research-only point-in-time top-100 plus liquid-perpetual replay (offline)
+PYTHONPATH=. .venv/bin/python cli/main.py crypto universe-momentum-scan \
+  --fixture tests/fixtures/crypto_momentum_replay.json \
+  --start 2026-08-25T00:00:00Z --end 2026-09-01T00:00:00Z \
+  --cadence 6h --symbols ARB,CAKE,CRV,TWT,EDGE,PONS --json
 python -m trading.crypto.client summary --wallet hermes --mainnet
 ```
 
