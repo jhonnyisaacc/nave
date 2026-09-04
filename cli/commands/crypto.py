@@ -14,12 +14,105 @@ from cli.professional_typer import ProfessionalTyper
 from trading.crypto.momentum import load_momentum_config
 from trading.crypto.momentum.formatters import render_universe_momentum_scan
 from trading.crypto.momentum.service import MomentumMarketService
+from research.core.contracts import ResearchResult
+from research.core.store import ResearchStore
+from research.crypto_futures import CryptoFuturesWorkflow
 from trading.crypto.analysis import CryptoAnalysisService
 from trading.crypto.analysis.daily_display import render_daily_entry_check, run_daily_entry_check
 
 crypto_app = ProfessionalTyper(help="Crypto momentum scans — use [bold]nave daily[/bold] for entry checks")
+futures_app = ProfessionalTyper(help="Research-only crypto futures momentum + COT workflows.")
+crypto_app.add_typer(futures_app, name="futures")
 DEFAULT_SCORE_THRESHOLD = load_momentum_config().score_tradeable_threshold
 DEFAULT_OPERATOR_SCORE_THRESHOLD = 90
+
+
+def _emit_research_result(result: ResearchResult, *, json_out: bool, markdown: bool) -> None:
+    if markdown:
+        typer.echo(result.to_markdown())
+    elif json_out:
+        typer.echo(result.to_json())
+    else:
+        typer.echo(f"{result.workflow}: {result.status.value}")
+        if result.warnings:
+            typer.echo("Warnings: " + "; ".join(result.warnings))
+
+
+@futures_app.command("scan")
+def futures_scan(
+    fixture: Path = typer.Option(..., "--fixture", exists=True, dir_okay=False, readable=True),
+    start: str = typer.Option(..., "--start"),
+    end: str = typer.Option(..., "--end"),
+    cadence: str = typer.Option("6h", "--cadence"),
+    universe_size: int = typer.Option(100, "--universe-size", min=1),
+    cot_regime: str = typer.Option("unknown", "--cot-regime", help="Market COT regime: bullish, bearish, neutral, or unknown."),
+    state_dir: Path | None = typer.Option(None, "--state-dir"),
+    json_out: bool = typer.Option(False, "--json"),
+    markdown: bool = typer.Option(False, "--markdown"),
+) -> None:
+    """Run the point-in-time top-universe futures research scan."""
+    workflow = CryptoFuturesWorkflow(store=ResearchStore(state_dir))
+    result = workflow.scan_from_fixture(
+        fixture_path=fixture,
+        start=start,
+        end=end,
+        cadence=cadence,
+        universe_size=universe_size,
+        cot_regime=cot_regime,
+        macro_context=workflow.store.load_context("cava"),
+    )
+    _emit_research_result(result, json_out=json_out, markdown=markdown)
+
+
+@futures_app.command("evaluate")
+def futures_evaluate(
+    outcomes_file: Path = typer.Option(..., "--outcomes-file", exists=True, dir_okay=False, readable=True),
+    scan_file: Path | None = typer.Option(None, "--scan-file", exists=True, dir_okay=False, readable=True),
+    state_dir: Path | None = typer.Option(None, "--state-dir"),
+    json_out: bool = typer.Option(False, "--json"),
+    markdown: bool = typer.Option(False, "--markdown"),
+) -> None:
+    """Evaluate persisted research selections against later outcomes."""
+    store = ResearchStore(state_dir)
+    scan = ResearchResult.from_dict(json.loads(scan_file.read_text(encoding="utf-8"))) if scan_file else store.load_result("crypto.futures.scan")
+    if scan is None:
+        raise typer.BadParameter("no scan result found; pass --scan-file or run futures scan")
+    raw = json.loads(outcomes_file.read_text(encoding="utf-8"))
+    outcomes = raw.get("outcomes", raw) if isinstance(raw, dict) else raw
+    result = CryptoFuturesWorkflow(store=store).evaluate(scan_result=scan, outcomes=outcomes)
+    _emit_research_result(result, json_out=json_out, markdown=markdown)
+
+
+@futures_app.command("missed-moves")
+def futures_missed_moves(
+    outcomes_file: Path = typer.Option(..., "--outcomes-file", exists=True, dir_okay=False, readable=True),
+    scan_file: Path | None = typer.Option(None, "--scan-file", exists=True, dir_okay=False, readable=True),
+    move_threshold: float = typer.Option(0.20, "--move-threshold"),
+    state_dir: Path | None = typer.Option(None, "--state-dir"),
+    json_out: bool = typer.Option(False, "--json"),
+    markdown: bool = typer.Option(False, "--markdown"),
+) -> None:
+    """Audit large subsequent moves that the scan did not select."""
+    store = ResearchStore(state_dir)
+    scan = ResearchResult.from_dict(json.loads(scan_file.read_text(encoding="utf-8"))) if scan_file else store.load_result("crypto.futures.scan")
+    if scan is None:
+        raise typer.BadParameter("no scan result found; pass --scan-file or run futures scan")
+    raw = json.loads(outcomes_file.read_text(encoding="utf-8"))
+    outcomes = raw.get("outcomes", raw) if isinstance(raw, dict) else raw
+    result = CryptoFuturesWorkflow(store=store).missed_moves(
+        scan_result=scan, outcomes=outcomes, move_threshold=move_threshold
+    )
+    _emit_research_result(result, json_out=json_out, markdown=markdown)
+
+
+@futures_app.command("status")
+def futures_status(
+    state_dir: Path | None = typer.Option(None, "--state-dir"),
+    json_out: bool = typer.Option(False, "--json"),
+) -> None:
+    """Show the latest scan, evaluation, and missed-move result states."""
+    payload = CryptoFuturesWorkflow(store=ResearchStore(state_dir)).status()
+    typer.echo(json.dumps(payload, indent=2) if json_out else json.dumps(payload, indent=2))
 
 
 def _json_default(value: Any) -> Any:
