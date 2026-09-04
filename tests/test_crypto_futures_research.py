@@ -3,6 +3,7 @@ from datetime import UTC, datetime
 from research.core.contracts import ResearchStatus
 from research.core.store import ResearchStore
 from research.crypto_futures import CryptoFuturesWorkflow, analyze_missed_moves, build_funnel, cot_regime_passes
+from research.crypto_cot import COTContextProvider
 
 
 NOW = datetime(2026, 9, 4, 12, 0, tzinfo=UTC)
@@ -119,6 +120,40 @@ def test_evaluation_and_missed_moves_are_separate_audits(tmp_path):
     assert row["rejection_filters"] == ["momentum_or_rank", "derivatives_liquidity", "market_structure_or_setup"]
     assert row["information_existed_before_move"] == "AFTER_DECISION"
     assert row["possible_systematic_blind_spot"] == "volume_acceleration"
+
+
+def test_cot_context_provider_reports_market_regime_source_and_freshness():
+    class Bias:
+        def __init__(self, bias):
+            self.bias = bias
+            self.confidence = 0.7
+            self.historical_percentile = 60
+            self.metadata = {"source": "CFTC via OpenBB"}
+
+    class Analyzer:
+        def analyze(self, _payload):
+            return {"BTC": Bias("bullish"), "ETH": Bias("bullish")}
+
+    provider = COTContextProvider(
+        fetcher=lambda: {
+            "BTC": {"as_of_date": "2026-09-01", "release_date": "2026-09-04"},
+            "ETH": {"as_of_date": "2026-09-01", "release_date": "2026-09-04"},
+        },
+        analyzer=Analyzer(),
+    )
+    result = provider.fetch(now=NOW)
+    assert result["status"] == "OK"
+    assert result["regime"] == "bullish"
+    assert result["freshness_days"] == 3
+    assert "CFTC" in result["source"]
+
+
+def test_scan_artifact_does_not_persist_forward_outcomes(tmp_path):
+    result = CryptoFuturesWorkflow(store=ResearchStore(tmp_path)).scan_payload(
+        replay(candidate()), macro_context={"validated": True}, cot_regime="neutral", now=NOW
+    )
+    assert "outcomes" not in result.payload["raw_replay_summary"]
+    assert result.payload["raw_replay_summary"]["outcomes_persisted"] is False
 
 
 def test_missed_move_analysis_does_not_treat_unavailable_information_as_known():

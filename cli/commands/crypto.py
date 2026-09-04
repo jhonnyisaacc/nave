@@ -40,27 +40,37 @@ def _emit_research_result(result: ResearchResult, *, json_out: bool, markdown: b
 
 @futures_app.command("scan")
 def futures_scan(
-    fixture: Path = typer.Option(..., "--fixture", exists=True, dir_okay=False, readable=True),
-    start: str = typer.Option(..., "--start"),
-    end: str = typer.Option(..., "--end"),
+    fixture: Path | None = typer.Option(None, "--fixture", exists=True, dir_okay=False, readable=True),
+    start: str | None = typer.Option(None, "--start"),
+    end: str | None = typer.Option(None, "--end"),
     cadence: str = typer.Option("6h", "--cadence"),
     universe_size: int = typer.Option(100, "--universe-size", min=1),
-    cot_regime: str = typer.Option("unknown", "--cot-regime", help="Market COT regime: bullish, bearish, neutral, or unknown."),
+    cot_regime: str | None = typer.Option(None, "--cot-regime", help="Optional market COT override: bullish, bearish, neutral, or unknown."),
     state_dir: Path | None = typer.Option(None, "--state-dir"),
     json_out: bool = typer.Option(False, "--json"),
     markdown: bool = typer.Option(False, "--markdown"),
 ) -> None:
     """Run the point-in-time top-universe futures research scan."""
     workflow = CryptoFuturesWorkflow(store=ResearchStore(state_dir))
-    result = workflow.scan_from_fixture(
-        fixture_path=fixture,
-        start=start,
-        end=end,
-        cadence=cadence,
-        universe_size=universe_size,
-        cot_regime=cot_regime,
-        macro_context=workflow.store.load_context("cava"),
-    )
+    if fixture:
+        if not start or not end:
+            raise typer.BadParameter("--fixture replay requires both --start and --end")
+        result = workflow.scan_from_fixture(
+            fixture_path=fixture,
+            start=start,
+            end=end,
+            cadence=cadence,
+            universe_size=universe_size,
+            cot_regime=cot_regime or "unknown",
+            macro_context=workflow.store.load_context("cava"),
+        )
+    else:
+        if start or end:
+            raise typer.BadParameter("--start and --end are only valid with --fixture")
+        result = workflow.scan_live(
+            universe_size=universe_size,
+            cot_regime=cot_regime,
+        )
     _emit_research_result(result, json_out=json_out, markdown=markdown)
 
 
@@ -329,9 +339,9 @@ def momentum_scan(
         help="Render Telegram-friendly MarkdownV2 digest (chunked).",
     ),
     include_universe_discovery: bool = typer.Option(
-        True,
+        False,
         "--include-universe-discovery/--no-universe-discovery",
-        help="Append the current top-100 plus liquid-perpetual research pass (default on).",
+        help="Append the current top-100 plus liquid-perpetual research pass (opt-in).",
     ),
     universe_size: int = typer.Option(
         100,
@@ -382,9 +392,9 @@ def scan(
         help="Render Telegram-friendly MarkdownV2 digest (chunked).",
     ),
     include_universe_discovery: bool = typer.Option(
-        True,
+        False,
         "--include-universe-discovery/--no-universe-discovery",
-        help="Append the current top-100 plus liquid-perpetual research pass (default on).",
+        help="Append the current top-100 plus liquid-perpetual research pass (opt-in).",
     ),
     universe_size: int = typer.Option(
         100,

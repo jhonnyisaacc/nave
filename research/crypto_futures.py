@@ -17,6 +17,7 @@ from typing import Any, Mapping
 from research.core.contracts import EvidenceKind, EvidenceReference, PointInTime, ResearchResult, ResearchStatus, RunMetadata
 from research.core.store import ResearchStore
 from trading.crypto.momentum.service import MomentumMarketService
+from research.crypto_cot import COTContextProvider
 
 
 STRATEGY_NAME = "crypto-futures-momentum-cot"
@@ -98,6 +99,7 @@ def build_funnel(
     *,
     macro_context: Mapping[str, Any] | None = None,
     cot_regime: str = "unknown",
+    cot_context: Mapping[str, Any] | None = None,
 ) -> tuple[dict[str, Any], list[dict[str, Any]], list[EvidenceReference]]:
     """Build a transparent universe → candidate funnel from replay observations."""
     counts = {
@@ -113,12 +115,25 @@ def build_funnel(
     final_candidates: list[dict[str, Any]] = []
     evidence: list[EvidenceReference] = []
     observations = payload.get("observations") or []
+    unique_members: set[str] = set()
+    effective_cot_regime = str(
+        (cot_context or {}).get("regime") if cot_context is not None else cot_regime
+    ).lower()
+    if effective_cot_regime not in {"bullish", "bearish", "neutral"}:
+        effective_cot_regime = "unknown"
     for observation in observations:
         if not isinstance(observation, Mapping):
             continue
         observation_time = _parse_time(observation.get("observation_timestamp"), datetime.now(UTC))
         members = observation.get("universe_members_deduplicated") or observation.get("universe_members") or []
-        counts["universe"] += len(members)
+        for member in members:
+            if isinstance(member, Mapping):
+                member_key = _asset_key(member)
+            else:
+                member_key = str(member).strip().lower()
+            if member_key and member_key != "unknown":
+                unique_members.add(member_key)
+        counts["universe"] = len(unique_members)
         candidates = observation.get("candidates") or []
         evidence.append(
             EvidenceReference(
@@ -147,7 +162,7 @@ def build_funnel(
             setup_valid = bool(isinstance(setup, Mapping) and setup.get("valid") is True)
             direction = _direction(raw_candidate)
             macro_pass = _macro_context_passes(macro_context)
-            cot_pass = cot_regime_passes(cot_regime, direction)
+            cot_pass = cot_regime_passes(effective_cot_regime, direction)
             if eligible:
                 counts["eligible"] += 1
                 counts["momentum_pass"] += 1
@@ -194,8 +209,11 @@ def build_funnel(
     counts["final_candidates"] = len(final_candidates)
     funnel = {
         **counts,
-        "cot_regime": cot_regime,
+        "cot_regime": effective_cot_regime,
         "cot_scope": "market/regime context; no per-altcoin COT signal",
+        "cot_context_status": (cot_context or {}).get("status", "MANUAL_OR_UNKNOWN"),
+        "cot_source": (cot_context or {}).get("source"),
+        "cot_as_of_date": (cot_context or {}).get("as_of_date"),
         "macro_context_validated": _macro_context_passes(macro_context),
         "validated_cava_context_consumed": _macro_context_passes(macro_context),
     }
@@ -314,16 +332,22 @@ class CryptoFuturesWorkflow:
         *,
         macro_context: Mapping[str, Any] | None = None,
         cot_regime: str = "unknown",
+        cot_context: Mapping[str, Any] | None = None,
+        mode: str = "REPLAY",
         now: datetime | None = None,
     ) -> ResearchResult:
         funnel, candidates, evidence = build_funnel(
-            replay_payload, macro_context=macro_context, cot_regime=cot_regime
+            replay_payload,
+            macro_context=macro_context,
+            cot_regime=cot_regime,
+            cot_context=cot_context,
         )
         warnings = []
         if not funnel["macro_context_validated"]:
             warnings.append("validated Cava/macro context unavailable; final candidates are suppressed")
-        if str(cot_regime).lower() not in {"bullish", "bearish", "neutral"}:
+        if funnel["cot_regime"] not in {"bullish", "bearish", "neutral"}:
             warnings.append("COT regime unavailable; COT is not applied as an asset-level signal")
+        warnings.extend(str(item) for item in (cot_context or {}).get("warnings", []))
         status = ResearchStatus.SETUP_FOUND if candidates else ResearchStatus.NO_SETUP
         result = self._result(
             workflow="crypto.futures.scan",
@@ -331,13 +355,13 @@ class CryptoFuturesWorkflow:
             payload={
                 "strategy": STRATEGY_NAME,
                 "strategy_version": STRATEGY_VERSION,
+                "mode": mode,
                 "funnel": funnel,
                 "final_candidates": candidates,
                 "observations": replay_payload.get("observations") or [],
                 "raw_replay_summary": {
                     "window": replay_payload.get("window"),
-                    "outcomes": replay_payload.get("outcomes") or [],
-                    "metrics": replay_payload.get("metrics") or {},
+                    "outcomes_persisted": False,
                 },
                 "research_only": True,
             },
@@ -348,6 +372,63 @@ class CryptoFuturesWorkflow:
         self.store.save_result(result)
         self.store.save_context("crypto_futures_latest_scan", result.to_dict())
         return result
+
+    def scan_live(
+        self,
+        *,
+        service: MomentumMarketService | None = None,
+        cot_provider: COTContextProvider | None = None,
+        cot_regime: str | None = None,
+        universe_size: int = 100,
+        now: datetime | None = None,
+    ) -> ResearchResult:
+        """Run the normal current-universe path without replay arguments."""
+        observed_at = now or datetime.now(UTC)
+        market_service = service or MomentumMarketService()
+        discovery = market_service.scan_current_universe_discovery(universe_size=universe_size)
+        if discovery.get("status") != "OK":
+            result = self._result(
+                workflow="crypto.futures.scan",
+                status=ResearchStatus.DATA_UNAVAILABLE,
+                payload={
+                    "strategy": STRATEGY_NAME,
+                    "strategy_version": STRATEGY_VERSION,
+                    "mode": "LIVE",
+                    "funnel": {"universe": 0, "final_candidates": 0, "cot_regime": "unknown"},
+                    "final_candidates": [],
+                    "observations": [],
+                    "provider": discovery,
+                    "research_only": True,
+                },
+                warnings=["live current-universe discovery is unavailable", *discovery.get("unknowns", [])],
+                now=observed_at,
+            )
+            self.store.save_result(result)
+            return result
+        cot_context = (cot_provider or COTContextProvider()).fetch(now=observed_at)
+        if cot_regime is not None:
+            cot_context = {
+                **cot_context,
+                "regime": cot_regime.lower(),
+                "status": "OVERRIDE",
+                "override": True,
+                "warnings": ["COT regime was explicitly overridden for research"],
+            }
+        observation = {
+            "observation_timestamp": discovery.get("observation_timestamp") or observed_at.isoformat(),
+            "source": "live:CoinGecko+Hyperliquid",
+            "source_timestamp": discovery.get("observation_timestamp") or observed_at.isoformat(),
+            "universe_members_deduplicated": (discovery.get("universe") or {}).get("members", []),
+            "candidates": discovery.get("candidates", []),
+        }
+        return self.scan_payload(
+            {"observations": [observation], "window": {"mode": "LIVE"}},
+            macro_context=self.store.load_context("cava"),
+            cot_regime="unknown",
+            cot_context=cot_context,
+            mode="LIVE",
+            now=observed_at,
+        )
 
     def scan_from_fixture(
         self,
@@ -376,6 +457,7 @@ class CryptoFuturesWorkflow:
             replay,
             macro_context=macro_context,
             cot_regime=cot_regime,
+            mode="REPLAY",
         )
 
     def evaluate(
