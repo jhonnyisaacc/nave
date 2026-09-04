@@ -11,7 +11,7 @@ import typer
 
 from cli.professional_typer import ProfessionalTyper
 from research.cava.pipeline import CAVA_RSS_URL, CavaWorkflow
-from research.cava.transcript import SupadataTranscriptProvider, TranscriptUnavailable
+from research.cava.transcript import SupadataTranscriptProvider
 from research.core.store import ResearchStore
 
 intel_app = ProfessionalTyper(help="NAVE intelligence workflows.")
@@ -38,12 +38,17 @@ def cava_daily(
     markdown: bool = typer.Option(False, "--markdown", help="Render the structured result as Markdown."),
 ) -> None:
     """Process the newest unprocessed Cava video through Supadata."""
-    rss_xml = rss_file.read_text(encoding="utf-8") if rss_file else _fetch_rss()
-    result = CavaWorkflow(store=ResearchStore(state_dir)).run(
-        rss_xml=rss_xml,
-        transcript_provider=SupadataTranscriptProvider(),
-        now=datetime.now(UTC),
-    )
+    store = ResearchStore(state_dir)
+    workflow = CavaWorkflow(store=store)
+    try:
+        rss_xml = rss_file.read_text(encoding="utf-8") if rss_file else _fetch_rss()
+        result = workflow.run(
+            rss_xml=rss_xml,
+            transcript_provider=SupadataTranscriptProvider(),
+            now=datetime.now(UTC),
+        )
+    except (OSError, typer.ClickException) as exc:
+        result = workflow.unavailable(str(exc), now=datetime.now(UTC))
     if markdown:
         typer.echo(result.to_markdown())
     elif json_out:

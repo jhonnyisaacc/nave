@@ -2,7 +2,8 @@ from datetime import UTC, datetime
 
 import httpx
 
-from research.cava.pipeline import CavaWorkflow, parse_rss
+from research.cava.corroboration import CavaCorroborator
+from research.cava.pipeline import CavaWorkflow, _transcript_claims, parse_rss
 from research.cava.transcript import SupadataTranscriptProvider, Transcript, TranscriptUnavailable
 from research.core.contracts import EvidenceKind, EvidenceReference, ResearchStatus
 from research.core.store import ResearchStore
@@ -90,12 +91,17 @@ def test_validated_context_is_persisted_and_cursor_advances(tmp_path):
     assert "new-video" in store.load_context("cava_cursor")["processed_video_ids"]
 
 
-def test_transcript_only_result_is_explicitly_not_validated(tmp_path):
+def test_transcript_only_result_is_explicitly_not_validated_when_source_is_unavailable(tmp_path):
     store = ResearchStore(tmp_path)
     provider = FixtureTranscriptProvider(
         transcript=Transcript("El dólar es relevante.", "es", "supadata", NOW)
     )
-    result = CavaWorkflow(store=store).run(rss_xml=RSS, transcript_provider=provider, now=NOW)
+    result = CavaWorkflow(store=store).run(
+        rss_xml=RSS,
+        transcript_provider=provider,
+        corroborate=lambda *_args: [],
+        now=NOW,
+    )
     assert result.status is ResearchStatus.INSUFFICIENT_EVIDENCE
     assert result.payload["evidence_quality"] == "TRANSCRIPT_ONLY"
     assert store.load_context("cava") is None
@@ -139,3 +145,58 @@ def test_supadata_async_job_is_polled_without_exposing_key():
     )
     assert provider.fetch("new-video").text == "Ready"
     assert paths == ["/v1/transcript", "/v1/transcript/job-1"]
+
+
+def test_default_corroborator_uses_authoritative_series_and_marks_fact():
+    calls: list[str] = []
+
+    def series(series_id: str):
+        calls.append(series_id)
+        return {"records": [{"date": "2026-09-03", "value": 100}, {"date": "2026-09-04", "value": 101}]}
+
+    transcript = Transcript("La inflación sube y las tasas bajan.", "es", "supadata", NOW)
+    provider = FixtureTranscriptProvider(transcript=transcript)
+    # Exercise the production callback directly so the test never depends on a live endpoint.
+    video = parse_rss(RSS)[0]
+    claims = _transcript_claims(video, transcript, NOW)
+    corroboration = CavaCorroborator(series_fetcher=series)(video, claims, NOW)
+
+    assert calls == ["CPIAUCSL", "DFF"]
+    assert len(corroboration.evidence) == 2
+    assert all(item.kind is EvidenceKind.FACT for item in corroboration.evidence)
+    assert all(item.metadata["provider_path"] == "injected" for item in corroboration.evidence)
+
+
+def test_corroborator_records_contradiction_without_inventing_support():
+    def series(_series_id: str):
+        return {"records": [{"date": "2026-09-03", "value": 101}, {"date": "2026-09-04", "value": 100}]}
+
+    transcript = Transcript("La inflación sube.", "es", "supadata", NOW)
+    video = parse_rss(RSS)[0]
+    claims = _transcript_claims(video, transcript, NOW)
+    corroboration = CavaCorroborator(series_fetcher=series)(video, claims, NOW)
+
+    assert corroboration.contradictions[0]["classification"] == "FACT"
+    assert corroboration.indicators[0]["relationship"] == "contradicts"
+    assert corroboration.evidence[0].metadata["relationship"] == "contradicts"
+
+
+def test_cava_partial_source_failure_still_persists_qualified_context(tmp_path):
+    def series(series_id: str):
+        if series_id == "DFF":
+            raise RuntimeError("temporary source outage")
+        return {"records": [{"date": "2026-09-03", "value": 100}, {"date": "2026-09-04", "value": 101}]}
+
+    transcript = Transcript("La inflación sube y las tasas suben.", "es", "supadata", NOW)
+    result = CavaWorkflow(store=ResearchStore(tmp_path)).run(
+        rss_xml=RSS,
+        transcript_provider=FixtureTranscriptProvider(transcript=transcript),
+        corroborate=CavaCorroborator(series_fetcher=series),
+        now=NOW,
+    )
+
+    assert result.status is ResearchStatus.SETUP_FOUND
+    assert result.payload["corroboration_status"] == "PARTIAL"
+    assert result.payload["contradictions"] == []
+    assert result.payload["cursor_advanced"] is True
+    assert "rates" in " ".join(result.warnings)

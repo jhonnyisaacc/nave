@@ -11,6 +11,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from research.cava.transcript import Transcript, TranscriptProvider, TranscriptUnavailable
+from research.cava.corroboration import CavaCorroboration, CavaCorroborator
 from research.core.contracts import (
     EvidenceKind,
     EvidenceReference,
@@ -125,10 +126,13 @@ def _indicators_and_implications(claims: Iterable[EvidenceReference]) -> tuple[l
     return indicators, implications
 
 
-def _default_corroboration(
-    _video: CavaVideo, _claims: list[EvidenceReference], _decision_time: datetime
-) -> list[EvidenceReference]:
-    return []
+def _normalize_corroboration(value: Any) -> CavaCorroboration:
+    """Keep the old callback contract while exposing richer production output."""
+    if isinstance(value, CavaCorroboration):
+        return value
+    # Compatibility for the original callback contract. Production returns a
+    # CavaCorroboration with explicit point-in-time metadata.
+    return CavaCorroboration(evidence=tuple(value or ()), legacy_callback=True)
 
 
 class CavaWorkflow:
@@ -140,6 +144,19 @@ class CavaWorkflow:
 
     def __init__(self, *, store: ResearchStore | None = None):
         self.store = store or ResearchStore()
+
+    def unavailable(self, message: str, *, now: datetime | None = None) -> ResearchResult:
+        """Record an RSS/provider outage without turning a scheduled run into a crash."""
+        started_at = now or datetime.now(UTC)
+        result = self._result(
+            status=ResearchStatus.DATA_UNAVAILABLE,
+            started_at=started_at,
+            decision_time=started_at,
+            payload={"source": CAVA_RSS_URL, "videos_seen": 0, "cursor_advanced": False},
+            warnings=(message,),
+        )
+        self.store.save_result(result)
+        return result
 
     def _cursor(self) -> set[str]:
         payload = self.store.load_context("cava_cursor") or {}
@@ -189,7 +206,7 @@ class CavaWorkflow:
         *,
         rss_xml: str,
         transcript_provider: TranscriptProvider,
-        corroborate: Callable[[CavaVideo, list[EvidenceReference], datetime], list[EvidenceReference]]
+        corroborate: Callable[[CavaVideo, list[EvidenceReference], datetime], Any]
         | None = None,
         now: datetime | None = None,
     ) -> ResearchResult:
@@ -267,21 +284,46 @@ class CavaWorkflow:
             return result
 
         claims = _transcript_claims(video, transcript, decision_time)
-        corroboration = (corroborate or _default_corroboration)(video, claims, decision_time)
+        corroboration = _normalize_corroboration(
+            (corroborate or CavaCorroborator())(video, claims, decision_time)
+        )
         indicators, implications = _indicators_and_implications(claims)
-        evidence = [*rss_evidence, *claims, *corroboration]
-        warnings: list[str] = []
-        if not corroboration:
-            warnings.append("no corroborating source was supplied; transcript claims remain speaker-attributed")
-        context_validated = bool(claims and corroboration)
+        evidence = [*rss_evidence, *claims, *corroboration.evidence]
+        warnings: list[str] = list(corroboration.warnings)
+        if not corroboration.evidence:
+            warnings.append("no eligible authoritative corroboration was found; transcript claims remain speaker-attributed")
+        context_validated = bool(
+            claims
+            and corroboration.evidence
+            and (
+                corroboration.legacy_callback
+                or any(
+                    item.point_in_time.availability == "ELIGIBLE"
+                    and item.kind is EvidenceKind.FACT
+                    for item in corroboration.evidence
+                )
+            )
+        )
+        corroboration_status = (
+            "VALIDATED"
+            if context_validated and not corroboration.warnings and not corroboration.contradictions
+            else "PARTIAL"
+            if context_validated
+            else "UNAVAILABLE"
+        )
+        all_indicators = [*({"topic": item} for item in indicators), *corroboration.indicators]
         payload = {
             "video": {"id": video.video_id, "title": video.title, "url": video.url},
             "published_at": video.published_at.isoformat(),
             "transcript": {"source": transcript.source, "language": transcript.language, "characters": len(transcript.text)},
             "claims": [claim.to_dict() for claim in claims],
-            "corroboration": [item.to_dict() for item in corroboration],
+            "corroboration": [item.to_dict() for item in corroboration.evidence],
             "relevant_indicators": indicators,
+            "corroboration_indicators": all_indicators,
+            "contradictions": list(corroboration.contradictions),
             "contradictions_uncertainty": warnings,
+            "corroboration_sources": list(corroboration.sources),
+            "corroboration_status": corroboration_status,
             "macro_implications": implications,
             "downstream_implications": {
                 "stocks": "REVIEW macro context with company evidence",
@@ -316,6 +358,10 @@ class CavaWorkflow:
                     "validated_at": decision_time.isoformat(),
                     "evidence_quality": payload["evidence_quality"],
                     "claims": payload["claims"],
+                    "corroboration": payload["corroboration"],
+                    "indicators": payload["corroboration_indicators"],
+                    "contradictions": payload["contradictions"],
+                    "sources": payload["corroboration_sources"],
                     "macro_regime_implications": implications,
                     "confidence": payload["confidence"],
                 },
