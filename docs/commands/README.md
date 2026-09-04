@@ -44,6 +44,16 @@ source .venv/bin/activate
 ./scripts/dev_shell.sh pytest -q
 ```
 
+Read-only stock-short research:
+
+```bash
+nave stocks short scan --input-file snapshots.json --json
+```
+
+The scanner requires multiple non-macro factors, retains rejected candidates,
+and emits research results only. Quant job migration declarations are kept in
+`ops/quant_nave_jobs.json` with `PREPARE_ONLY` and disabled by default.
+
 ## 2) Unified CLI (`nave`)
 
 If `nave` is not available in your shell, use:

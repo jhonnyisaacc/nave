@@ -56,6 +56,7 @@ from trading.stocks.x_client import (
     DEFAULT_LIMIT_PER_TICKER,
     DEFAULT_LOOKBACK_DAYS,
 )
+from research.shorts import StockShortResearchWorkflow
 
 logger = configure_logger(__name__, level=logging.INFO)
 
@@ -66,6 +67,48 @@ ism_calendar_app = ProfessionalTyper(
     help="Internal ISM release calendar (sourced from FMP)."
 )
 stocks_app.add_typer(ism_calendar_app, name="ism-calendar")
+short_research_app = ProfessionalTyper(help="Read-only multi-factor stock-short research")
+stocks_app.add_typer(short_research_app, name="short")
+
+
+def _load_short_research_rows(input_file: Optional[Path]) -> list[dict]:
+    if input_file is None:
+        return []
+    if not input_file.exists() or not input_file.is_file():
+        raise typer.BadParameter(f"input file does not exist: {input_file}", param_hint="--input-file")
+    payload = _json.loads(input_file.read_text(encoding="utf-8"))
+    if isinstance(payload, dict):
+        payload = payload.get("snapshots", payload.get("outcomes", []))
+    if not isinstance(payload, list) or not all(isinstance(item, dict) for item in payload):
+        raise typer.BadParameter("input file must contain a JSON list of objects", param_hint="--input-file")
+    return payload
+
+
+def _emit_short_research_result(result, *, json_out: bool, output: Optional[Path]) -> None:
+    rendered = result.to_json() if json_out else result.to_markdown()
+    if output is not None:
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(rendered, encoding="utf-8")
+        typer.echo(str(output))
+    else:
+        typer.echo(rendered, nl=False)
+
+
+@short_research_app.command("scan")
+def short_research_scan(
+    input_file: Optional[Path] = typer.Option(None, "--input-file", help="JSON point-in-time stock snapshots."),
+    decision_time: Optional[str] = typer.Option(None, "--decision-time", help="Timezone-aware ISO timestamp."),
+    json_out: bool = typer.Option(False, "--json", help="Emit structured JSON."),
+    output: Optional[Path] = typer.Option(None, "--output", help="Optional report output path."),
+    persist: bool = typer.Option(True, "--persist/--no-persist", help="Persist the research result under NAVE state."),
+) -> None:
+    """Scan stock-short factors; this command never places or sizes a trade."""
+    result = StockShortResearchWorkflow().scan(
+        _load_short_research_rows(input_file),
+        decision_time=decision_time,
+        persist=persist,
+    )
+    _emit_short_research_result(result, json_out=json_out, output=output)
 
 
 @stocks_app.command("portfolio-review")
