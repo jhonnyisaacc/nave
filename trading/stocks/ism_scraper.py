@@ -3,10 +3,10 @@ ISM "Report On Business®" scraper.
 
 Two data paths:
 
-  1. **Headline PMI via FRED** — the FRED series ``NAPM`` (Manufacturing
+  1. **Headline PMI via OpenBB/FRED** — the FRED series ``NAPM`` (Manufacturing
      composite PMI) and ``NMFBAI`` (Services Business Activity Index) are
-     already accessible through the ``FRED_API_KEY`` this repo already
-     ships with. Fast, free, low-risk.
+     obtained through the repository's OpenBB adapter in the production
+     portfolio context path, with the parsed release value as a fallback.
 
   2. **Industry rankings via the ISM press release** — the monthly
      "Manufacturing ISM® Report On Business®" press releases publish an
@@ -86,14 +86,11 @@ class ISMReport:
 
 
 class ISMReportFetcher:
-    """
-    Hybrid ISM fetcher: httpx+BS4 primary, Playwright fallback.
+    """Fetch the official ISM release for its prose industry rankings.
 
-    The default implementation uses ``httpx`` against ismworld.org press
-    releases — the industry ranking sentences are plain HTML paragraphs,
-    so no browser engine is required. Consumers that need to scrape a
-    JS-heavy mirror (Investing.com, Trading Economics) can pass
-    ``use_playwright=True`` to fall back to the async browser driver.
+    Headline index values belong to OpenBB/FRED. The release parser exists
+    because the current OpenBB adapter does not expose the ranked industry
+    sentences; it does not scrape FRED, CFTC, or market-history data.
     """
 
     def __init__(

@@ -83,3 +83,30 @@ def test_watch_threshold_is_deterministic_and_does_not_escalate_model():
     assert result.status is ResearchStatus.ACTION_REQUIRED
     assert result.payload["events"][0]["event"] == "ZONE_REACHED"
     assert result.payload["model_escalation"] is False
+
+
+def test_watch_supports_explicit_above_below_and_cross_conditions():
+    watches = [
+        {"ticker": "A", "condition": "ABOVE", "threshold": 100},
+        {"ticker": "B", "condition": "BELOW", "threshold": 100},
+        {"ticker": "C", "condition": "CROSS_ABOVE", "threshold": 100},
+        {"ticker": "D", "condition": "CROSS_BELOW", "threshold": 100},
+    ]
+    result = check_watch(
+        watches,
+        {"A": 101, "B": 99, "C": 101, "D": 99},
+        previous_prices={"C": 99, "D": 101},
+        now=NOW,
+    )
+    assert {item["event"] for item in result.payload["events"]} == {
+        "ABOVE", "BELOW", "CROSS_ABOVE", "CROSS_BELOW"
+    }
+
+
+def test_watch_zone_requires_explicit_bounds():
+    result = check_watch(
+        [{"ticker": "ABC", "condition": "ZONE", "zone": [95, 105]}],
+        {"ABC": 100},
+        now=NOW,
+    )
+    assert result.payload["events"][0]["zone"] == {"lower": 95.0, "upper": 105.0}

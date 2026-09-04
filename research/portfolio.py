@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 import os
 import uuid
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Mapping
@@ -270,41 +270,90 @@ def check_watch(
     watches: list[Mapping[str, Any]],
     prices: Mapping[str, float],
     *,
+    previous_prices: Mapping[str, float] | None = None,
     now: datetime | None = None,
 ) -> ResearchResult:
-    """Cheap deterministic threshold check; model escalation is always false."""
+    """Cheap deterministic condition check; model escalation is always false."""
     events: list[dict[str, Any]] = []
+    checked_prices: dict[str, float | None] = {}
+    unavailable: list[str] = []
+    previous_prices = previous_prices or {}
     for watch in watches:
         ticker = str(watch.get("ticker") or "").upper()
-        threshold = watch.get("threshold")
         price = prices.get(ticker)
-        if not ticker or price is None or threshold is None:
+        if not ticker:
+            continue
+        checked_prices[ticker] = float(price) if price is not None else None
+        if price is None:
+            unavailable.append(ticker)
+        condition_raw = watch.get("condition")
+        condition = str(condition_raw or "ZONE").upper()
+        if condition not in {"ABOVE", "BELOW", "CROSS_ABOVE", "CROSS_BELOW", "ZONE"}:
             continue
         try:
-            reached = float(price) >= float(threshold)
+            if price is None:
+                continue
+            current = float(price)
+            threshold = watch.get("threshold")
+            lower = upper = None
+            zone = watch.get("zone")
+            if isinstance(zone, (list, tuple)) and len(zone) == 2:
+                lower, upper = float(zone[0]), float(zone[1])
+            elif isinstance(watch.get("lower"), (int, float)) or isinstance(watch.get("upper"), (int, float)):
+                lower = float(watch["lower"]) if watch.get("lower") is not None else None
+                upper = float(watch["upper"]) if watch.get("upper") is not None else None
+            if condition in {"ABOVE", "BELOW", "CROSS_ABOVE", "CROSS_BELOW"} and threshold is None:
+                continue
+            if condition == "ABOVE":
+                reached = current >= float(threshold)
+            elif condition == "BELOW":
+                reached = current <= float(threshold)
+            elif condition == "CROSS_ABOVE":
+                previous = previous_prices.get(ticker)
+                reached = previous is not None and float(previous) < float(threshold) <= current
+            elif condition == "CROSS_BELOW":
+                previous = previous_prices.get(ticker)
+                reached = previous is not None and current <= float(threshold) < float(previous)
+            else:
+                # Backwards-compatible rows with only ``threshold`` retain
+                # the former zone/reached behavior.
+                reached = (
+                    current >= float(threshold)
+                    if not condition_raw and threshold is not None
+                    else lower is not None and current >= lower and
+                    upper is not None and current <= upper
+                )
         except (TypeError, ValueError):
             continue
         if reached:
-            events.append(
-                {
-                    "ticker": ticker,
-                    "price": float(price),
-                    "threshold": float(threshold),
-                    "thesis": watch.get("thesis"),
-                    "source_strategy": watch.get("source_strategy"),
-                    "event": "ZONE_REACHED",
-                }
-            )
+            event = "ZONE_REACHED" if condition == "ZONE" else condition
+            item = {
+                "ticker": ticker,
+                "price": current,
+                "condition": condition,
+                "threshold": float(threshold) if threshold is not None else None,
+                "thesis": watch.get("thesis"),
+                "source_strategy": watch.get("source_strategy"),
+                "event": event,
+            }
+            if lower is not None or upper is not None:
+                item["zone"] = {"lower": lower, "upper": upper}
+            events.append(item)
     result = _result(
         "portfolio.watch",
         ResearchStatus.ACTION_REQUIRED if events else ResearchStatus.NO_SETUP,
         {
             "events": events,
             "checked": len(watches),
+            "prices": checked_prices,
+            "unavailable_prices": unavailable,
             "model_escalation": False,
-            "reason": "deterministic threshold comparison only",
+            "reason": "deterministic condition comparison only",
         },
-        warnings=["watch events notify a human; they never execute"] if events else [],
+        warnings=[
+            *(["watch events notify a human; they never execute"] if events else []),
+            *([f"current price unavailable for: {', '.join(unavailable)}"] if unavailable else []),
+        ],
         now=now,
     )
     return result
