@@ -13,6 +13,7 @@ or fetch the whole range from OpenBB.
 from __future__ import annotations
 
 import re
+import sys
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -37,6 +38,12 @@ class DataNotFoundError(RuntimeError):
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DATA_DIR = PROJECT_ROOT / "data"
+
+
+def _diagnostic(*args: Any, **kwargs: Any) -> None:
+    """Keep loader diagnostics off machine-readable command stdout."""
+    kwargs.setdefault("file", sys.stderr)
+    print(*args, **kwargs)
 
 # Ticker aliases — all stored lowercase for case-insensitive matching.
 COIN_ALIASES: dict[str, list[str]] = {
@@ -300,7 +307,7 @@ def _normalize(df: pd.DataFrame) -> pd.DataFrame:
 def _scan(data_dir: Path) -> Inventory:
     inventory = Inventory()
     if not data_dir.exists():
-        print(f"[data_loader] data directory not found: {data_dir}")
+        _diagnostic(f"[data_loader] data directory not found: {data_dir}")
         return inventory
 
     files = sorted(
@@ -317,7 +324,7 @@ def _scan(data_dir: Path) -> Inventory:
             raw = _read_raw(path)
             df = _normalize(raw)
         except Exception as exc:  # noqa: BLE001
-            print(f"[data_loader] skip {path.relative_to(PROJECT_ROOT)}: {exc}")
+            _diagnostic(f"[data_loader] skip {path.relative_to(PROJECT_ROOT)}: {exc}")
             continue
         if df.empty:
             continue
@@ -325,7 +332,7 @@ def _scan(data_dir: Path) -> Inventory:
             df["timestamp"]
         )
         if tf is None:
-            print(
+            _diagnostic(
                 f"[data_loader] skip {path.relative_to(PROJECT_ROOT)}: "
                 "cannot determine timeframe"
             )
@@ -346,7 +353,7 @@ def _scan(data_dir: Path) -> Inventory:
 
 def _print_inventory(inventory: Inventory) -> None:
     if not inventory.files:
-        print("[data_loader] no local OHLCV files discovered under data/")
+        _diagnostic("[data_loader] no local OHLCV files discovered under data/")
         return
 
     for coin in sorted(inventory.files):
@@ -356,7 +363,7 @@ def _print_inventory(inventory: Inventory) -> None:
                 rel = entry.path.relative_to(PROJECT_ROOT)
                 start_s = entry.start.strftime("%Y-%m-%d")
                 end_s = entry.end.strftime("%Y-%m-%d")
-                print(
+                _diagnostic(
                     f"[data_loader] found: {coin} {tf} — {rel} "
                     f"({start_s} → {end_s}, {entry.rows} rows)"
                 )
@@ -373,7 +380,7 @@ def _print_inventory(inventory: Inventory) -> None:
             )
             if source is not None:
                 assert source is not None
-                print(
+                _diagnostic(
                     f"[data_loader] note: {coin} {tf} will be resampled "
                     f"from {coin} {source.timeframe}"
                 )
@@ -451,7 +458,7 @@ def _write_binance_cache(coin: str, timeframe: str, df: pd.DataFrame) -> None:
     try:
         cache_dir.mkdir(parents=True, exist_ok=True)
     except Exception as exc:  # noqa: BLE001
-        print(f"[data_loader] cache dir create failed: {exc}")
+        _diagnostic(f"[data_loader] cache dir create failed: {exc}")
         return
     path = _cache_path(coin, timeframe)
     merged = df
@@ -465,15 +472,15 @@ def _write_binance_cache(coin: str, timeframe: str, df: pd.DataFrame) -> None:
                 .reset_index(drop=True)
             )
         except Exception as exc:  # noqa: BLE001
-            print(f"[data_loader] cache merge failed, overwriting: {exc}")
+            _diagnostic(f"[data_loader] cache merge failed, overwriting: {exc}")
     try:
         merged.to_parquet(path, index=False)
         rel = path.relative_to(PROJECT_ROOT)
-        print(
+        _diagnostic(
             f"[data_loader] cached {len(merged)} rows for {coin} {timeframe} → {rel}"
         )
     except Exception as exc:  # noqa: BLE001
-        print(f"[data_loader] cache write failed: {exc}")
+        _diagnostic(f"[data_loader] cache write failed: {exc}")
 
 
 def _fetch_binance(
@@ -485,7 +492,7 @@ def _fetch_binance(
     try:
         import requests  # type: ignore
     except Exception as exc:  # noqa: BLE001
-        print(f"[data_loader] 'requests' unavailable: {exc}")
+        _diagnostic(f"[data_loader] 'requests' unavailable: {exc}")
         return None
 
     symbol = _binance_symbol(coin)
@@ -509,13 +516,13 @@ def _fetch_binance(
         try:
             resp = session.get(BINANCE_URL, params=params, timeout=30)
         except Exception as exc:  # noqa: BLE001
-            print(f"[data_loader] Binance fetch failed for {coin} {timeframe}: {exc}")
+            _diagnostic(f"[data_loader] Binance fetch failed for {coin} {timeframe}: {exc}")
             return None
         requests_made += 1
 
         if resp.status_code != 200:
             snippet = resp.text[:200].replace("\n", " ")
-            print(
+            _diagnostic(
                 f"[data_loader] Binance {coin} {timeframe} HTTP {resp.status_code}: "
                 f"{snippet}"
             )
@@ -524,7 +531,7 @@ def _fetch_binance(
         try:
             batch = resp.json()
         except Exception as exc:  # noqa: BLE001
-            print(f"[data_loader] Binance JSON decode failed: {exc}")
+            _diagnostic(f"[data_loader] Binance JSON decode failed: {exc}")
             return None
 
         if not isinstance(batch, list) or not batch:
@@ -569,7 +576,7 @@ def _fetch_binance(
     if df.empty:
         return None
 
-    print(
+    _diagnostic(
         f"[data_loader] Binance returned {len(df)} rows for {coin} {timeframe} "
         f"({df['timestamp'].iloc[0].date()} → {df['timestamp'].iloc[-1].date()}) "
         f"after {requests_made} request(s)"
@@ -594,7 +601,7 @@ def _fetch_openbb(
     try:
         from openbb import obb  # type: ignore
     except Exception as exc:  # noqa: BLE001
-        print(f"[data_loader] OpenBB unavailable: {exc}")
+        _diagnostic(f"[data_loader] OpenBB unavailable: {exc}")
         return None
 
     symbol = _openbb_symbol(coin)
@@ -608,13 +615,13 @@ def _fetch_openbb(
         )
         df = result.to_df().reset_index()
     except Exception as exc:  # noqa: BLE001
-        print(f"[data_loader] OpenBB fetch failed for {coin} {timeframe}: {exc}")
+        _diagnostic(f"[data_loader] OpenBB fetch failed for {coin} {timeframe}: {exc}")
         return None
 
     try:
         df = _normalize(df)
     except Exception as exc:  # noqa: BLE001
-        print(f"[data_loader] OpenBB response normalization failed: {exc}")
+        _diagnostic(f"[data_loader] OpenBB response normalization failed: {exc}")
         return None
 
     if df.empty:
@@ -762,7 +769,7 @@ def load(
         covers_end = local_end >= end_ts
 
         if covers_start and covers_end:
-            print(f"[{coin} {timeframe}] source: local — {local_label}")
+            _diagnostic(f"[{coin} {timeframe}] source: local — {local_label}")
             return _slice(local_df, start_ts, end_ts)
 
         # Gap fill with OpenBB for anything missing at either end.
@@ -808,12 +815,12 @@ def load(
             )
 
         if gap_notes:
-            print(
+            _diagnostic(
                 f"[{coin} {timeframe}] source: local ({local_label}) + "
                 f"remote gap-fill ({'; '.join(gap_notes)})"
             )
         else:
-            print(
+            _diagnostic(
                 f"[{coin} {timeframe}] source: local — {local_label} "
                 f"(partial; remote gap-fill unavailable)"
             )
@@ -824,7 +831,7 @@ def load(
     # ------------------------------------------------------------------ #
     fetched = _fetch_remote(coin, timeframe, start_ts, end_ts)
     if fetched is not None and not fetched.empty:
-        print(f"[{coin} {timeframe}] source: remote (no local file found)")
+        _diagnostic(f"[{coin} {timeframe}] source: remote (no local file found)")
         return _slice(fetched, start_ts, end_ts)
 
     raise DataNotFoundError(
