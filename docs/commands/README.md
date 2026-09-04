@@ -113,6 +113,19 @@ Note: `nave cot report` now prints both `Futures Only` and `Futures+Options`
 metrics for each asset. The `--report-type` option controls which dataset is
 used as the primary bias source.
 
+Read-only options research:
+
+```bash
+nave options crypto scan --input-file snapshots.json --json
+nave options stocks scan --input-file snapshots.json --json
+nave strategy evaluate crypto_iv_rv_defined_risk --domain crypto --input-file outcomes.json --json
+```
+
+The options research commands only consume supplied snapshots/outcomes. They
+record point-in-time availability, keep crypto (BTC/ETH) and equity options
+separate, and classify strategies as `EXPERIMENTAL`, `PROMISING`, `VALIDATED`,
+or `REJECTED`. They never create orders or broker actions.
+
 ## 3) Python Module CLIs
 
 Hyperliquid client module:

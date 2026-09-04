@@ -8,12 +8,12 @@ has been opened and is awaiting review. All workflows remain
 | PR | Topic | Branch | Base | Depends on | Status | Tests | URL |
 | -- | -- | -- | -- | -- | -- | -- | -- |
 | 1 | NAVE research foundation | `feat/nave-research-foundation` | `main` | — | OPEN | 8 passed | [PR #42](https://github.com/jhonnyisaacc/nave/pull/42) |
-| 2 | José Luis Cava / macro intelligence | `feat/nave-cava-intelligence` | PR 1 | PR 1 | PLANNED | — | — |
+| 2 | José Luis Cava / macro intelligence | `feat/nave-cava-intelligence` | PR 1 | PR 1 | OPEN | 14 passed | [PR #43](https://github.com/jhonnyisaacc/nave/pull/43) |
 | 3 | Crypto futures momentum + COT | `feat/nave-crypto-futures` | PR 1 | PR 1 | PLANNED | — | — |
 | 4 | Portfolio / ISM / watchlist | `feat/nave-portfolio` | PR 1 | PR 1 | PLANNED | — | — |
 | 5 | Political financial disclosures | `feat/nave-political-disclosures` | PR 1 | PR 1 | PLANNED | — | — |
 | 6 | Memecoin research + Dune | `feat/nave-memecoin-research` | PR 1 | PR 1 | PLANNED | — | — |
-| 7 | Options research | `feat/nave-options-research` | PR 1 | PR 1 | PLANNED | — | — |
+| 7 | Options research | `feat/nave-options-research` | PR 1 | PR 1 | OPEN | 6 passed | [PR #48](https://github.com/jhonnyisaacc/nave/pull/48) |
 | 8 | Stock shorts + Quant orchestration | `feat/nave-shorts-and-quant-orchestration` | PR 1 / `main` | PR 1; topic readiness | PLANNED | — | — |
 
 ## FOLLOW_UP_TOPIC
@@ -22,3 +22,6 @@ has been opened and is awaiting review. All workflows remain
   use the runtime provider and preserve the cursor on transcript failure.
 - Abi/Hermes job declarations are inspected in `/home/david/agent` but are not
   changed by the foundation PR.
+- Supadata is the configured runtime transcript provider for Cava when
+  `SUPADATA_API_KEY` or `SUPADATA_API_TOKEN` is present; no credential is
+  stored in this repository.

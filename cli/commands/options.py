@@ -34,10 +34,74 @@ from options.universe import (
     get_sp500_top40,
 )
 from options.visualization import TerminalChartDependencyError, render_terminal_charts
+from research.options import OptionDomain, OptionResearchWorkflow
 
 options_app = ProfessionalTyper(help="Options analytics commands")
 registry_app = ProfessionalTyper(help="Per-ticker playbook registry (S&P top 40)")
+options_research_app = ProfessionalTyper(help="Read-only options research workflows")
+crypto_research_app = ProfessionalTyper(help="Crypto options research (BTC and ETH)")
+stocks_research_app = ProfessionalTyper(help="Equity options research")
 options_app.add_typer(registry_app, name="registry")
+options_app.add_typer(crypto_research_app, name="crypto")
+options_app.add_typer(stocks_research_app, name="stocks")
+
+
+def _research_rows(input_file: Path | None) -> list[dict]:
+    if input_file is None:
+        return []
+    if not input_file.exists() or not input_file.is_file():
+        raise typer.BadParameter(f"input file does not exist: {input_file}", param_hint="--input-file")
+    payload = json.loads(input_file.read_text(encoding="utf-8"))
+    if isinstance(payload, dict):
+        payload = payload.get("snapshots", payload.get("outcomes", []))
+    if not isinstance(payload, list) or not all(isinstance(item, dict) for item in payload):
+        raise typer.BadParameter("input file must contain a JSON list of objects", param_hint="--input-file")
+    return payload
+
+
+def _emit_research_result(result, *, json_out: bool, output: Path | None) -> None:
+    rendered = result.to_json() if json_out else result.to_markdown()
+    if output is not None:
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(rendered, encoding="utf-8")
+        typer.echo(str(output))
+    else:
+        typer.echo(rendered, nl=False)
+
+
+def _run_options_scan(
+    domain: OptionDomain,
+    input_file: Path | None,
+    decision_time: str | None,
+    json_out: bool,
+    output: Path | None,
+) -> None:
+    result = OptionResearchWorkflow().scan(
+        domain, _research_rows(input_file), decision_time=decision_time, persist=False
+    )
+    _emit_research_result(result, json_out=json_out, output=output)
+
+
+@crypto_research_app.command("scan")
+def crypto_research_scan(
+    input_file: Path | None = typer.Option(None, "--input-file", help="JSON snapshots; no file means no live data is fetched."),
+    decision_time: str | None = typer.Option(None, "--decision-time", help="Timezone-aware ISO timestamp."),
+    json_out: bool = typer.Option(False, "--json", help="Emit structured JSON."),
+    output: Path | None = typer.Option(None, "--output", help="Optional report output path."),
+) -> None:
+    """Scan BTC/ETH options inputs without producing an execution instruction."""
+    _run_options_scan(OptionDomain.CRYPTO, input_file, decision_time, json_out, output)
+
+
+@stocks_research_app.command("scan")
+def stocks_research_scan(
+    input_file: Path | None = typer.Option(None, "--input-file", help="JSON snapshots; no file means no live data is fetched."),
+    decision_time: str | None = typer.Option(None, "--decision-time", help="Timezone-aware ISO timestamp."),
+    json_out: bool = typer.Option(False, "--json", help="Emit structured JSON."),
+    output: Path | None = typer.Option(None, "--output", help="Optional report output path."),
+) -> None:
+    """Scan equity options inputs without producing an execution instruction."""
+    _run_options_scan(OptionDomain.STOCKS, input_file, decision_time, json_out, output)
 
 
 def _build_options_analyzer(*, source: str) -> OptionsAnalyzer:
