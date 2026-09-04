@@ -17,6 +17,13 @@ rules, provider adapters, point-in-time checks, and evidence conventions.
 - Delivery is a report for human review. It is not an execution workflow.
 - The private deduplication cursor is maintained by Abi/Hermes, outside Git.
 
+The canonical NAVE command is now `nave intel cava daily`; Quant should consume
+its structured JSON result and render the human-facing report. Transcript
+retrieval uses the runtime-configured Supadata provider with the
+`SUPADATA_API_KEY` (or `SUPADATA_API_TOKEN`) environment variable. Supadata's
+transcript endpoint supports synchronous results and bounded asynchronous job
+polling; the API key is never included in result state or reports.
+
 The old `UCfEJZJ4V8e6lQkV8m4r0n5w` identifier is invalid and must not be used.
 If RSS is unavailable, the task must record that fact and use an explicit
 public-channel or native-transcript fallback; it must never invent a video or

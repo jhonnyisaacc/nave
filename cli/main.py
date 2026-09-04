@@ -14,6 +14,7 @@ from cli.commands.daily import daily_app
 from cli.commands.core import api_app, data_app, mcp_app, trading_app
 from cli.commands.cot import cot_app
 from cli.commands.hermes import hermes_app
+from cli.commands.intel import intel_app
 from cli.commands.memecoin import memecoin_app
 from cli.commands.options import options_app
 from cli.commands.research import research_app
@@ -36,6 +37,7 @@ app.add_typer(api_app, name="api")
 app.add_typer(mcp_app, name="mcp")
 app.add_typer(cot_app, name="cot")
 app.add_typer(hermes_app, name="hermes")
+app.add_typer(intel_app, name="intel")
 app.add_typer(stocks_app, name="stocks")
 app.add_typer(memecoin_app, name="memecoin")
 app.add_typer(options_app, name="options")

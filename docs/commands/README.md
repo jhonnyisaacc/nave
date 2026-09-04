@@ -66,6 +66,10 @@ Main help/version:
 ```bash
 nave --help
 nave version
+
+# NAVE-owned structured intelligence
+nave intel cava daily --json
+nave intel context latest --json
 ```
 
 Data commands:
