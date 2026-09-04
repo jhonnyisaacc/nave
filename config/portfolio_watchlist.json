@@ -1,0 +1,18 @@
+{
+  "version": 1,
+  "purpose": "Initial diversified research watch universe; not a buy list or trade instruction.",
+  "watches": [
+    {"ticker": "AAPL", "sector": "Information Technology", "thesis": "Large-cap technology and consumer-demand observation."},
+    {"ticker": "AMAT", "sector": "Information Technology", "thesis": "Semiconductor capital-cycle observation."},
+    {"ticker": "CAT", "sector": "Industrials", "thesis": "Industrial activity and capital-goods observation."},
+    {"ticker": "JPM", "sector": "Financials", "thesis": "Financial conditions and credit-cycle observation."},
+    {"ticker": "JNJ", "sector": "Health Care", "thesis": "Defensive health-care observation."},
+    {"ticker": "KO", "sector": "Consumer Staples", "thesis": "Defensive consumer-demand observation."},
+    {"ticker": "NKE", "sector": "Consumer Discretionary", "thesis": "Discretionary demand and inventory observation."},
+    {"ticker": "GOOGL", "sector": "Communication Services", "thesis": "Advertising and digital-services observation."},
+    {"ticker": "XOM", "sector": "Energy", "thesis": "Energy-cycle and commodity sensitivity observation."},
+    {"ticker": "FCX", "sector": "Materials", "thesis": "Copper and industrial-materials observation."},
+    {"ticker": "NEE", "sector": "Utilities", "thesis": "Rates-sensitive utility observation."},
+    {"ticker": "PLD", "sector": "Real Estate", "thesis": "Industrial real-estate and rates observation."}
+  ]
+}

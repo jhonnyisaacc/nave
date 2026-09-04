@@ -66,6 +66,12 @@ Main help/version:
 ```bash
 nave --help
 nave version
+
+# Human-gated portfolio research
+nave portfolio review --json
+nave portfolio candidates --ism-file ism.json --json
+nave portfolio ism --ism-file ism.json --json
+nave portfolio watch --watch-file watches.json --prices-file prices.json --json
 ```
 
 Data commands:
