@@ -8,7 +8,7 @@ does not imply scheduling or execution permission.
 
 | PR | Topic | Ready | Remaining blocker | Focused tests | Production capable |
 | --- | --- | --- | --- | --- | --- |
-| #42 | Foundation | READY_TO_MERGE | Human review; final head is `e5288002c74a326dd67a6f828a3f361893c2954f` | Foundation contract/CLI tests | N/A — shared contract |
+| #42 | Foundation | READY_TO_MERGE | Human review; final head includes timezone fix `e5288002c74a326dd67a6f828a3f361893c2954f` plus clean JSON diagnostics `4fbd8cf` | Foundation contract/CLI tests | N/A — shared contract |
 | #43 | Cava intelligence | READY_TO_MERGE | Supadata/OpenBB/FRED runtime availability; no job enabled | `tests/test_cava_intelligence.py` | YES, runtime-key/provider gated |
 | #44 | Crypto futures + COT | READY_TO_MERGE | Review live provider freshness and keep PR #41 superseded | crypto futures and momentum CLI tests | YES, truthful LIVE/REPLAY paths |
 | #45 | Portfolio / ISM / watch | READY_TO_MERGE | Review local portfolio state and provider freshness | portfolio research/provider tests | YES, with provider fallbacks |
@@ -45,3 +45,10 @@ official release; they are not replaced with a guessed index series.
 The final combined branch is created only for the practical full suite and
 CLI/security checks. It is not a replacement for the topic PRs and does not
 enable recurring jobs.
+
+The initial research watch universe is recorded in
+`config/portfolio_watchlist.json`: AAPL, AMAT, CAT, JPM, JNJ, KO, NKE, GOOGL,
+XOM, FCX, NEE, and PLD. These are observation candidates, not buy signals or
+trade instructions.
+
+The combined integration run completed with `784 passed, 1 deselected`.
