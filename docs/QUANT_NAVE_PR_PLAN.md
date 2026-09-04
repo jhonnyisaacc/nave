@@ -12,7 +12,7 @@ has been opened and is awaiting review. All workflows remain
 | 3 | Crypto futures momentum + COT | `feat/nave-crypto-futures` | PR 1 | PR 1 | PLANNED | — | — |
 | 4 | Portfolio / ISM / watchlist | `feat/nave-portfolio` | PR 1 | PR 1 | PLANNED | — | — |
 | 5 | Political financial disclosures | `feat/nave-political-disclosures` | PR 1 | PR 1 | PLANNED | — | — |
-| 6 | Memecoin research + Dune | `feat/nave-memecoin-research` | PR 1 | PR 1 | IN PROGRESS | focused tests pending | — |
+| 6 | Memecoin research + Dune | `feat/nave-memecoin-research` | PR 1 | PR 1 | OPEN | 41 passed | [PR #47](https://github.com/jhonnyisaacc/nave/pull/47) |
 | 7 | Options research | `feat/nave-options-research` | PR 1 | PR 1 | PLANNED | — | — |
 | 8 | Stock shorts + Quant orchestration | `feat/nave-shorts-and-quant-orchestration` | PR 1 / `main` | PR 1; topic readiness | PLANNED | — | — |
 
