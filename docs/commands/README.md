@@ -66,6 +66,9 @@ Main help/version:
 ```bash
 nave --help
 nave version
+
+# Normalized public financial disclosures
+nave disclosures sync --congress-file congress.json --executive-file executive.json --json
 ```
 
 Data commands:
