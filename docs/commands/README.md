@@ -66,6 +66,13 @@ Main help/version:
 ```bash
 nave --help
 nave version
+
+# Point-in-time memecoin research (local/cached input)
+nave memecoin discover --input-file snapshot.json --json
+nave memecoin evaluate --outcomes-file outcomes.json --json
+nave memecoin missed-moves --outcomes-file outcomes.json --json
+nave memecoin backtest --discover-file discovery.json --outcomes-file outcomes.json --json
+nave memecoin status --json
 ```
 
 Data commands:
