@@ -57,6 +57,7 @@ from trading.stocks.x_client import (
     DEFAULT_LOOKBACK_DAYS,
 )
 from research.shorts import StockShortResearchWorkflow
+from research.core.store import ResearchStore
 
 logger = configure_logger(__name__, level=logging.INFO)
 
@@ -100,10 +101,11 @@ def short_research_scan(
     decision_time: Optional[str] = typer.Option(None, "--decision-time", help="Timezone-aware ISO timestamp."),
     json_out: bool = typer.Option(False, "--json", help="Emit structured JSON."),
     output: Optional[Path] = typer.Option(None, "--output", help="Optional report output path."),
+    state_dir: Optional[Path] = typer.Option(None, "--state-dir", help="Runtime NAVE research state directory."),
     persist: bool = typer.Option(True, "--persist/--no-persist", help="Persist the research result under NAVE state."),
 ) -> None:
     """Scan stock-short factors; this command never places or sizes a trade."""
-    result = StockShortResearchWorkflow().scan(
+    result = StockShortResearchWorkflow(store=ResearchStore(state_dir)).scan(
         _load_short_research_rows(input_file),
         decision_time=decision_time,
         persist=persist,

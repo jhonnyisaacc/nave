@@ -7,7 +7,7 @@ the strategy can be audited for systematic blind spots.
 
 from __future__ import annotations
 
-import hashlib
+import uuid
 from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from typing import Any
@@ -68,8 +68,7 @@ def _decision_time(value: datetime | str | None) -> datetime:
 
 
 def _run_id(phase: str, decision_time: datetime, count: int) -> str:
-    raw = f"stocks.short.{phase}|{decision_time.astimezone(UTC).isoformat()}|{count}"
-    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
+    return f"{phase}-{count}-{uuid.uuid4().hex[:12]}"
 
 
 def _metadata(phase: str, decision_time: datetime, count: int) -> RunMetadata:
@@ -120,12 +119,19 @@ class StockShortResearchWorkflow:
             "catalyst": str(row.get("catalyst") or "").strip() or None,
             "positioning_crowding": _flag(row.get("positioning_crowding")),
         }
+        # Valuation support is evidence against a short, not a positive short
+        # factor. It must never inflate the downside factor count.
         non_macro = sum(
-            bool(factors[name]) for name in _FACTORS if name != "macro_regime"
+            bool(factors[name])
+            for name in _FACTORS
+            if name not in {"macro_regime", "valuation_support"}
         )
         total = non_macro + int(macro in {"bearish", "risk_off", "contraction"})
         passed = [name for name in _FACTORS if factors[name]]
-        if total < 3:
+        if factors["valuation_support"]:
+            reason = "valuation_support"
+            selected = False
+        elif total < 3:
             reason = "macro_only" if macro in {"bearish", "risk_off", "contraction"} and non_macro < 2 else "insufficient_factors"
             selected = False
         elif non_macro < 2:
@@ -316,4 +322,3 @@ class StockShortResearchWorkflow:
         if persist and self.store:
             self.store.save_result(result)
         return result
-

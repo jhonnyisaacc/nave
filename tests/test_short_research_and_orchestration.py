@@ -9,6 +9,7 @@ from research.orchestration import (
     validate_job_declarations,
 )
 from research.shorts import StockShortResearchWorkflow
+from research.core.store import ResearchStore
 
 
 DECISION = datetime(2026, 9, 4, 12, 0, tzinfo=UTC)
@@ -93,3 +94,17 @@ def test_job_manifest_has_no_enabled_unready_jobs_and_detects_duplicates():
     assert duplicate_job_keys(duplicate) == [jobs[0].key]
     assert validate_job_declarations(duplicate)[0].startswith("duplicate key:")
 
+
+def test_short_persist_writes_to_the_supplied_store(tmp_path):
+    workflow = StockShortResearchWorkflow(store=ResearchStore(tmp_path))
+    result = workflow.scan([_row()], decision_time=DECISION, persist=True)
+    assert workflow.store.load_result("stocks.short.scan").metadata.run_id == result.metadata.run_id
+
+
+def test_valuation_support_cannot_create_a_short_candidate():
+    result = StockShortResearchWorkflow().scan(
+        [_row(valuation_support=True)], decision_time=DECISION
+    )
+    assert result.payload["final_candidates"] == []
+    assert result.payload["rejected_candidates"][0]["reason"] == "valuation_support"
+    assert result.payload["rejected_candidates"][0]["factor_count"] == 5

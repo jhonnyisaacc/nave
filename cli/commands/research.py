@@ -10,6 +10,7 @@ import typer
 from cli.professional_typer import ProfessionalTyper
 from research.core.contracts import ResearchResult
 from research.core.store import ResearchStore
+from research.orchestration import present_result
 
 research_app = ProfessionalTyper(help="Inspect read-only structured research results.")
 
@@ -49,3 +50,12 @@ def report(
     """Validate and render a saved structured result."""
     result = ResearchResult.from_dict(json.loads(json_file.read_text(encoding="utf-8")))
     typer.echo(result.to_markdown() if markdown else result.to_json())
+
+
+@research_app.command("present")
+def present(
+    json_file: Path = typer.Option(..., "--json-file", exists=True, readable=True),
+) -> None:
+    """Render the concise evidence-aware view intended for Quant delivery."""
+    result = ResearchResult.from_dict(json.loads(json_file.read_text(encoding="utf-8")))
+    typer.echo(json.dumps(present_result(result), indent=2, default=str))
