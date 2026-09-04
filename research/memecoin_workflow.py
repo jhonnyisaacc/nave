@@ -29,6 +29,17 @@ def _time(value: Any, default: datetime) -> datetime:
     return parsed.astimezone(UTC) if parsed.tzinfo else parsed.replace(tzinfo=UTC)
 
 
+def _strict_time(value: Any) -> datetime | None:
+    """Parse a supplied timestamp without turning malformed data into now."""
+    if value in (None, ""):
+        return None
+    try:
+        parsed = value if isinstance(value, datetime) else datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    return parsed.astimezone(UTC) if parsed.tzinfo else parsed.replace(tzinfo=UTC)
+
+
 def _asset(row: Mapping[str, Any]) -> str:
     return str(row.get("asset") or row.get("symbol") or row.get("mint") or "").strip()
 
@@ -38,7 +49,9 @@ def _eligible(row: Mapping[str, Any], *, min_volume_acceleration: float, min_liq
     available_at = row.get("available_at")
     if not available_at:
         return False, ["unknown_feature_availability"]
-    available = _time(available_at, decision_time)
+    available = _strict_time(available_at)
+    if available is None:
+        return False, ["invalid_feature_availability"]
     if available > decision_time:
         return False, ["hindsight_feature_not_available_at_decision"]
     blockers: list[str] = []
@@ -128,7 +141,7 @@ def missed_moves(scan_payload: Mapping[str, Any], outcomes: list[Mapping[str, An
         row = rejected.get(asset.lower())
         decision_time = _time((row or outcome).get("decision_time"), datetime.now(UTC))
         info_time_raw = outcome.get("information_available_at")
-        info_time = _time(info_time_raw, decision_time) if info_time_raw else None
+        info_time = _strict_time(info_time_raw) if info_time_raw else None
         information_state = "UNKNOWN" if info_time is None else (
             "BEFORE_MOVE" if info_time <= decision_time else "AFTER_DECISION"
         )
@@ -176,19 +189,34 @@ class MemecoinResearchWorkflow:
 
     def discover(self, rows: list[Mapping[str, Any]], *, dune_cache: Path | None = None) -> ResearchResult:
         dune_usage = {
-            "mode": "cached" if dune_cache else "local_input",
+            "mode": "materialized_cache" if dune_cache else "local_input",
             "query_executed": False,
-            "estimated_credits": 0,
-            "actual_credits": 0,
+            "estimated_credits": None,
+            "actual_credits": None,
             "source": str(dune_cache) if dune_cache else "caller-provided rows",
         }
         payload_rows = rows
         if dune_cache:
             raw = json.loads(dune_cache.read_text(encoding="utf-8"))
             payload_rows = raw.get("rows", raw) if isinstance(raw, Mapping) else raw
+            if isinstance(raw, Mapping):
+                usage = raw.get("credit_usage") if isinstance(raw.get("credit_usage"), Mapping) else {}
+                dune_usage.update(
+                    {
+                        "query_identity": raw.get("query_identity"),
+                        "query_id": raw.get("query_id"),
+                        "estimated_credits": usage.get("estimated"),
+                        "actual_credits": usage.get("actual"),
+                        "mode": "materialized_cache" if raw.get("provider") == "dune" else "cached",
+                    }
+                )
         result_payload = discover_rows(payload_rows)
         result_payload["dune_usage"] = dune_usage
-        result_payload["case_study"] = {"asset": "$MEME", "used_as": "one cohort case study only", "overfit_guard": "no asset-specific rule added"}
+        meme_present = any(str(_asset(row)).upper() in {"MEME", "$MEME"} for row in payload_rows if isinstance(row, Mapping))
+        result_payload["case_study"] = (
+            {"asset": "$MEME", "used_as": "one named cohort case study only", "overfit_guard": "no asset-specific rule added"}
+            if meme_present else None
+        )
         status = ResearchStatus.SETUP_FOUND if result_payload["selected"] else ResearchStatus.NO_SETUP
         result = self._result(
             "memecoin.discover",

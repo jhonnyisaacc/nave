@@ -10,7 +10,6 @@ from __future__ import annotations
 import json as _json
 import logging
 from pathlib import Path
-from typing import Optional
 
 import typer
 from rich.console import Console
@@ -23,6 +22,7 @@ from trading.memecoin.scanner import SORT_ACTIVE, SORT_FRESH, SORT_TOP_MCAP
 from research.core.contracts import ResearchResult
 from research.core.store import ResearchStore
 from research.memecoin_workflow import MemecoinResearchWorkflow
+from research.dune.materializer import DuneMaterializer
 
 _SORT_CHOICES = {
     "active": SORT_ACTIVE,
@@ -35,6 +35,8 @@ logger = configure_logger(__name__, level=logging.INFO)
 memecoin_app = ProfessionalTyper(
     help="Solana memecoin scanner (Pump.fun + Helius + DexScreener + Jupiter)."
 )
+dune_app = ProfessionalTyper(help="Bounded Dune materialization for memecoin research.")
+memecoin_app.add_typer(dune_app, name="dune")
 
 
 def _emit_research(result: ResearchResult, *, json_out: bool, markdown: bool) -> None:
@@ -50,17 +52,39 @@ def _emit_research(result: ResearchResult, *, json_out: bool, markdown: bool) ->
 
 @memecoin_app.command("discover")
 def discover(
-    input_file: Path = typer.Option(..., "--input-file", exists=True, readable=True),
+    input_file: Path | None = typer.Option(None, "--input-file", exists=True, readable=True),
     dune_cache: Path | None = typer.Option(None, "--dune-cache", exists=True, readable=True),
     state_dir: Path | None = typer.Option(None, "--state-dir"),
     json_out: bool = typer.Option(False, "--json"),
     markdown: bool = typer.Option(False, "--markdown"),
 ) -> None:
     """Discover point-in-time candidates from an explicit local snapshot."""
-    raw = _json.loads(input_file.read_text(encoding="utf-8"))
-    rows = raw.get("rows", raw) if isinstance(raw, dict) else raw
+    if input_file:
+        raw = _json.loads(input_file.read_text(encoding="utf-8"))
+        rows = raw.get("rows", raw) if isinstance(raw, dict) else raw
+    elif dune_cache:
+        rows = []
+    else:
+        raise typer.BadParameter("pass --input-file for replay or --dune-cache for a materialized Dune result")
     result = MemecoinResearchWorkflow(store=ResearchStore(state_dir)).discover(rows, dune_cache=dune_cache)
     _emit_research(result, json_out=json_out, markdown=markdown)
+
+
+@dune_app.command("materialize")
+def materialize_dune(
+    query_id: str = typer.Option(..., "--query-id", help="Saved Dune query ID."),
+    output: Path = typer.Option(..., "--output", help="Local JSON materialization path."),
+    limit: int = typer.Option(10_000, "--limit", min=1, max=100_000),
+    force: bool = typer.Option(False, "--force/--no-force", help="Re-run even when the matching cache exists."),
+) -> None:
+    """Run one bounded Dune query and cache it for later local discovery."""
+    payload = DuneMaterializer().materialize(
+        query_id=query_id,
+        output=output,
+        limit=limit,
+        force=force,
+    )
+    typer.echo(_json.dumps({key: value for key, value in payload.items() if key != "rows"}, indent=2, default=str))
 
 
 def _load_result(store: ResearchStore, path: Path | None) -> ResearchResult:
