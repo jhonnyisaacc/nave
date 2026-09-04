@@ -1,8 +1,9 @@
-"""Crypto momentum command group for BTC/ETH derivatives scans."""
+"""Crypto momentum commands for the existing scan and research discovery."""
 
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import Any
 
 import typer
@@ -11,13 +12,117 @@ from rich.table import Table
 
 from cli.professional_typer import ProfessionalTyper
 from trading.crypto.momentum import load_momentum_config
+from trading.crypto.momentum.formatters import render_universe_momentum_scan
 from trading.crypto.momentum.service import MomentumMarketService
+from research.core.contracts import ResearchResult
+from research.core.store import ResearchStore
+from research.crypto_futures import CryptoFuturesWorkflow
 from trading.crypto.analysis import CryptoAnalysisService
 from trading.crypto.analysis.daily_display import render_daily_entry_check, run_daily_entry_check
 
-crypto_app = ProfessionalTyper(help="Crypto BTC/ETH — use [bold]nave daily[/bold] for entry checks")
+crypto_app = ProfessionalTyper(help="Crypto momentum scans — use [bold]nave daily[/bold] for entry checks")
+futures_app = ProfessionalTyper(help="Research-only crypto futures momentum + COT workflows.")
+crypto_app.add_typer(futures_app, name="futures")
 DEFAULT_SCORE_THRESHOLD = load_momentum_config().score_tradeable_threshold
 DEFAULT_OPERATOR_SCORE_THRESHOLD = 90
+
+
+def _emit_research_result(result: ResearchResult, *, json_out: bool, markdown: bool) -> None:
+    if markdown:
+        typer.echo(result.to_markdown())
+    elif json_out:
+        typer.echo(result.to_json())
+    else:
+        typer.echo(f"{result.workflow}: {result.status.value}")
+        if result.warnings:
+            typer.echo("Warnings: " + "; ".join(result.warnings))
+
+
+@futures_app.command("scan")
+def futures_scan(
+    fixture: Path | None = typer.Option(None, "--fixture", exists=True, dir_okay=False, readable=True),
+    start: str | None = typer.Option(None, "--start"),
+    end: str | None = typer.Option(None, "--end"),
+    cadence: str = typer.Option("6h", "--cadence"),
+    universe_size: int = typer.Option(100, "--universe-size", min=1),
+    cot_regime: str | None = typer.Option(None, "--cot-regime", help="Optional market COT override: bullish, bearish, neutral, or unknown."),
+    state_dir: Path | None = typer.Option(None, "--state-dir"),
+    json_out: bool = typer.Option(False, "--json"),
+    markdown: bool = typer.Option(False, "--markdown"),
+) -> None:
+    """Run the point-in-time top-universe futures research scan."""
+    workflow = CryptoFuturesWorkflow(store=ResearchStore(state_dir))
+    if fixture:
+        if not start or not end:
+            raise typer.BadParameter("--fixture replay requires both --start and --end")
+        result = workflow.scan_from_fixture(
+            fixture_path=fixture,
+            start=start,
+            end=end,
+            cadence=cadence,
+            universe_size=universe_size,
+            cot_regime=cot_regime or "unknown",
+            macro_context=workflow.store.load_context("cava"),
+        )
+    else:
+        if start or end:
+            raise typer.BadParameter("--start and --end are only valid with --fixture")
+        result = workflow.scan_live(
+            universe_size=universe_size,
+            cot_regime=cot_regime,
+        )
+    _emit_research_result(result, json_out=json_out, markdown=markdown)
+
+
+@futures_app.command("evaluate")
+def futures_evaluate(
+    outcomes_file: Path = typer.Option(..., "--outcomes-file", exists=True, dir_okay=False, readable=True),
+    scan_file: Path | None = typer.Option(None, "--scan-file", exists=True, dir_okay=False, readable=True),
+    state_dir: Path | None = typer.Option(None, "--state-dir"),
+    json_out: bool = typer.Option(False, "--json"),
+    markdown: bool = typer.Option(False, "--markdown"),
+) -> None:
+    """Evaluate persisted research selections against later outcomes."""
+    store = ResearchStore(state_dir)
+    scan = ResearchResult.from_dict(json.loads(scan_file.read_text(encoding="utf-8"))) if scan_file else store.load_result("crypto.futures.scan")
+    if scan is None:
+        raise typer.BadParameter("no scan result found; pass --scan-file or run futures scan")
+    raw = json.loads(outcomes_file.read_text(encoding="utf-8"))
+    outcomes = raw.get("outcomes", raw) if isinstance(raw, dict) else raw
+    result = CryptoFuturesWorkflow(store=store).evaluate(scan_result=scan, outcomes=outcomes)
+    _emit_research_result(result, json_out=json_out, markdown=markdown)
+
+
+@futures_app.command("missed-moves")
+def futures_missed_moves(
+    outcomes_file: Path = typer.Option(..., "--outcomes-file", exists=True, dir_okay=False, readable=True),
+    scan_file: Path | None = typer.Option(None, "--scan-file", exists=True, dir_okay=False, readable=True),
+    move_threshold: float = typer.Option(0.20, "--move-threshold"),
+    state_dir: Path | None = typer.Option(None, "--state-dir"),
+    json_out: bool = typer.Option(False, "--json"),
+    markdown: bool = typer.Option(False, "--markdown"),
+) -> None:
+    """Audit large subsequent moves that the scan did not select."""
+    store = ResearchStore(state_dir)
+    scan = ResearchResult.from_dict(json.loads(scan_file.read_text(encoding="utf-8"))) if scan_file else store.load_result("crypto.futures.scan")
+    if scan is None:
+        raise typer.BadParameter("no scan result found; pass --scan-file or run futures scan")
+    raw = json.loads(outcomes_file.read_text(encoding="utf-8"))
+    outcomes = raw.get("outcomes", raw) if isinstance(raw, dict) else raw
+    result = CryptoFuturesWorkflow(store=store).missed_moves(
+        scan_result=scan, outcomes=outcomes, move_threshold=move_threshold
+    )
+    _emit_research_result(result, json_out=json_out, markdown=markdown)
+
+
+@futures_app.command("status")
+def futures_status(
+    state_dir: Path | None = typer.Option(None, "--state-dir"),
+    json_out: bool = typer.Option(False, "--json"),
+) -> None:
+    """Show the latest scan, evaluation, and missed-move result states."""
+    payload = CryptoFuturesWorkflow(store=ResearchStore(state_dir)).status()
+    typer.echo(json.dumps(payload, indent=2) if json_out else json.dumps(payload, indent=2))
 
 
 def _json_default(value: Any) -> Any:
@@ -39,6 +144,8 @@ def _build_scan_payload(
     risk_pct: float,
     score_threshold: int,
     apply_cadence_policy: bool,
+    include_universe_discovery: bool,
+    universe_size: int,
 ) -> dict:
     service = MomentumMarketService()
     return service.scan_live(
@@ -48,6 +155,8 @@ def _build_scan_payload(
         risk_pct=risk_pct,
         score_threshold=score_threshold,
         apply_cadence_policy=apply_cadence_policy,
+        include_universe_discovery=include_universe_discovery,
+        universe_size=universe_size,
     )
 
 
@@ -100,6 +209,19 @@ def _render_scan(payload: dict) -> None:
                 f"{plan['expected_move_pct'] * 100:.1f}",
             )
     console.print(table)
+    universe = payload.get("universe_discovery")
+    if isinstance(universe, dict):
+        console.print(
+            "\nCurrent universe discovery (research only): "
+            f"{universe.get('status', 'UNKNOWN')} at {universe.get('observation_timestamp', '—')}"
+        )
+        for candidate in (universe.get("top_candidates") or [])[:10]:
+            console.print(
+                f"  {candidate.get('symbol', '?')} · "
+                f"score={candidate.get('rank_score', '—')} · "
+                f"{candidate.get('ranking_state', 'UNKNOWN')} · "
+                f"liq={candidate.get('liquidity', {}).get('state', 'UNKNOWN')}"
+            )
 
 
 def _render_playbook(payload: dict) -> None:
@@ -151,6 +273,8 @@ def _run_scan_command(
     adaptive_threshold: bool,
     telegram_markdown_v2: bool,
     json_out: bool,
+    include_universe_discovery: bool,
+    universe_size: int,
 ) -> None:
     payload = _build_scan_payload(
         symbols=symbols,
@@ -159,6 +283,8 @@ def _run_scan_command(
         risk_pct=risk_pct,
         score_threshold=score_threshold,
         apply_cadence_policy=adaptive_threshold,
+        include_universe_discovery=include_universe_discovery,
+        universe_size=universe_size,
     )
     _emit_scan_payload(
         payload,
@@ -212,9 +338,20 @@ def momentum_scan(
         "--telegram-markdown-v2",
         help="Render Telegram-friendly MarkdownV2 digest (chunked).",
     ),
+    include_universe_discovery: bool = typer.Option(
+        False,
+        "--include-universe-discovery/--no-universe-discovery",
+        help="Append the current top-100 plus liquid-perpetual research pass (opt-in).",
+    ),
+    universe_size: int = typer.Option(
+        100,
+        "--universe-size",
+        min=1,
+        help="Current market-cap universe size for the research pass.",
+    ),
     json_out: bool = typer.Option(False, "--json", help="Emit JSON only."),
 ) -> None:
-    """Scan BTC/ETH derivatives for fresh momentum setups."""
+    """Scan derivatives and optionally append current-universe research."""
     _run_scan_command(
         symbols=symbols,
         tf=tf,
@@ -224,6 +361,8 @@ def momentum_scan(
         adaptive_threshold=adaptive_threshold,
         telegram_markdown_v2=telegram_markdown_v2,
         json_out=json_out,
+        include_universe_discovery=include_universe_discovery,
+        universe_size=universe_size,
     )
 
 
@@ -252,6 +391,17 @@ def scan(
         "--telegram-markdown-v2",
         help="Render Telegram-friendly MarkdownV2 digest (chunked).",
     ),
+    include_universe_discovery: bool = typer.Option(
+        False,
+        "--include-universe-discovery/--no-universe-discovery",
+        help="Append the current top-100 plus liquid-perpetual research pass (opt-in).",
+    ),
+    universe_size: int = typer.Option(
+        100,
+        "--universe-size",
+        min=1,
+        help="Current market-cap universe size for the research pass.",
+    ),
     json_out: bool = typer.Option(False, "--json", help="Emit JSON only."),
 ) -> None:
     """Default market scan: routes to the momentum engine."""
@@ -264,6 +414,8 @@ def scan(
         adaptive_threshold=adaptive_threshold,
         telegram_markdown_v2=telegram_markdown_v2,
         json_out=json_out,
+        include_universe_discovery=include_universe_discovery,
+        universe_size=universe_size,
     )
 
 
@@ -419,3 +571,48 @@ def momentum_backtest(
             f"{delta.get('expectancy', 0.0):+.2f}",
         )
     console.print(table)
+
+
+@crypto_app.command("universe-momentum-scan")
+def universe_momentum_scan(
+    fixture: Path = typer.Option(
+        ...,
+        "--fixture",
+        exists=True,
+        dir_okay=False,
+        readable=True,
+        help="Explicit offline point-in-time fixture; no current-universe fallback exists.",
+    ),
+    start: str = typer.Option(..., "--start", help="UTC observation-window start."),
+    end: str = typer.Option(..., "--end", help="UTC observation-window end."),
+    symbols: str = typer.Option(
+        "ARB,CAKE,CRV,TWT,EDGE,PONS",
+        "--symbols",
+        help="Target tickers or canonical asset IDs for the audit.",
+    ),
+    cadence: str = typer.Option("6h", "--cadence", help="Observation cadence, e.g. 3h or 6h."),
+    universe_size: int = typer.Option(100, "--universe-size", min=1),
+    config: Path | None = typer.Option(None, "--config", exists=True, dir_okay=False),
+    validate_setups: bool = typer.Option(True, "--validate-setups/--no-validate-setups"),
+    sensitivity: bool = typer.Option(True, "--sensitivity/--no-sensitivity"),
+    max_candidates: int = typer.Option(25, "--max-candidates", min=1),
+    json_out: bool = typer.Option(False, "--json", help="Emit JSON only."),
+) -> None:
+    """Replay point-in-time top-100 plus liquid-perpetual discovery offline."""
+    target_symbols = [part.strip().upper() for part in symbols.replace(" ", ",").split(",") if part.strip()]
+    payload = MomentumMarketService().research_universe_momentum_scan(
+        fixture_path=str(fixture),
+        start=start,
+        end=end,
+        cadence=cadence,
+        universe_size=universe_size,
+        symbols=target_symbols or None,
+        config_path=str(config) if config is not None else None,
+        validate_setups=validate_setups,
+        include_sensitivity=sensitivity,
+        max_candidates=max_candidates,
+    )
+    if json_out:
+        typer.echo(json.dumps(payload, indent=2, default=_json_default))
+        return
+    typer.echo(render_universe_momentum_scan(payload, max_rows=max_candidates))

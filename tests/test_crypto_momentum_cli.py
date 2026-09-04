@@ -49,6 +49,41 @@ def test_crypto_momentum_scan_json(monkeypatch) -> None:
     assert decoded["cadence"]["state"] == "normal"
 
 
+def test_crypto_momentum_scan_can_append_universe_discovery(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+    payload = {
+        "strategy": "derivatives_momentum_v1",
+        "symbols": ["BTCUSDT", "ETHUSDT"],
+        "summary": {"tradeable_count": 0},
+        "cadence": {},
+        "results": {},
+        "universe_discovery": {"mode": "current_research_only", "status": "OK"},
+    }
+
+    from trading.crypto.momentum.service import MomentumMarketService
+
+    def fake_scan_live(self, **kwargs):
+        captured.update(kwargs)
+        return payload
+
+    monkeypatch.setattr(MomentumMarketService, "scan_live", fake_scan_live)
+    result = runner.invoke(
+        app,
+        [
+            "crypto",
+            "momentum-scan",
+            "--include-universe-discovery",
+            "--universe-size",
+            "50",
+            "--json",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert captured["include_universe_discovery"] is True
+    assert captured["universe_size"] == 50
+
+
 def test_crypto_momentum_playbook_json(monkeypatch) -> None:
     payload = {
         "strategy": "derivatives_momentum_v1",

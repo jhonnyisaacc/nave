@@ -123,6 +123,27 @@ python -m trading.crypto.client positions --wallet hermes
 python -m trading.crypto.client orders --wallet hermes
 python -m trading.crypto.client mids --wallet hermes
 python -m trading.crypto.client markets --wallet hermes
+
+# Existing BTC/ETH momentum scan with an appended current-universe research view
+PYTHONPATH=. .venv/bin/python cli/main.py crypto momentum-scan \
+  --include-universe-discovery --universe-size 100 --json
+
+# Research-only point-in-time top-100 plus liquid-perpetual replay (offline)
+PYTHONPATH=. .venv/bin/python cli/main.py crypto universe-momentum-scan \
+  --fixture tests/fixtures/crypto_momentum_replay.json \
+  --start 2026-08-25T00:00:00Z --end 2026-09-01T00:00:00Z \
+  --cadence 6h --symbols ARB,CAKE,CRV,TWT,EDGE,PONS --json
+
+# Structured crypto futures lifecycle over an explicit point-in-time fixture
+PYTHONPATH=. .venv/bin/python cli/main.py crypto futures scan \
+  --fixture tests/fixtures/crypto_momentum_replay.json \
+  --start 2026-08-25T00:00:00Z --end 2026-09-01T00:00:00Z \
+  --cot-regime neutral --json
+PYTHONPATH=. .venv/bin/python cli/main.py crypto futures evaluate \
+  --outcomes-file outcomes.json --json
+PYTHONPATH=. .venv/bin/python cli/main.py crypto futures missed-moves \
+  --outcomes-file outcomes.json --json
+PYTHONPATH=. .venv/bin/python cli/main.py crypto futures status --json
 python -m trading.crypto.client summary --wallet hermes --mainnet
 ```
 

@@ -1,0 +1,32 @@
+{
+  "min_quote_volume_24h": 5000000,
+  "min_open_interest": 1000000,
+  "require_open_interest": true,
+  "max_spread_bps": 20,
+  "max_slippage_bps": 25,
+  "min_history_hours": 72,
+  "max_price_staleness_hours": 8,
+  "breakout_lookback_bars": 42,
+  "trend_persistence_bars": 24,
+  "volume_baseline_bars": 168,
+  "retest_distance_pct": 0.02,
+  "min_rank_score": 50,
+  "universe_benchmark": "median_7d_return",
+  "meaningful_move_pct": 0.10,
+  "outcome_horizon_hours": 168,
+  "fee_bps_per_side": 5,
+  "default_slippage_bps": 10,
+  "funding_interval_hours": 8,
+  "cadence_hours": 6,
+  "sensitivity_cadence_hours": [3, 6, 12],
+  "sensitivity_score_thresholds": [50, 60, 70],
+  "score_weights": {
+    "return_7d": 0.25,
+    "return_24h": 0.15,
+    "relative_strength": 0.25,
+    "acceleration": 0.15,
+    "breakout": 0.10,
+    "volume_expansion": 0.05,
+    "trend_persistence": 0.05
+  }
+}
