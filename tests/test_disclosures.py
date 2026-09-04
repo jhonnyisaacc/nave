@@ -8,6 +8,8 @@ from research.disclosures import (
     normalize_congress,
     normalize_executive,
 )
+from research.disclosure_providers import OfficialHouseDisclosureProvider, OfficialOGEExecutiveDisclosureProvider
+import httpx
 
 
 NOW = datetime(2026, 9, 4, 12, 0, tzinfo=UTC)
@@ -87,3 +89,71 @@ def test_delayed_disclosure_is_visible_not_a_buy_signal(tmp_path):
     row = result.payload["records"][0]
     assert row["timeliness"] == "STALE"
     assert result.payload["disclosure_is_not_a_buy_signal"] is True
+
+
+def test_fmp_dataclass_field_names_are_normalized():
+    record = normalize_congress({
+        "firstName": "Nancy",
+        "lastName": "Pelosi",
+        "owner": "Joint",
+        "symbol": "NVDA",
+        "transaction_type": "Purchase",
+        "asset_description": "NVIDIA Corporation",
+        "transaction_date": "2026-08-01",
+        "disclosure_date": "2026-08-20",
+        "amount_range": "$15,001 - $50,000",
+        "link": "https://house.example/filing/1",
+    })
+    assert record is not None
+    assert record.transaction_type == "PURCHASE"
+    assert record.asset == "NVDA"
+    assert record.amount_range == "$15,001 - $50,000"
+
+
+def test_congress_and_executive_provider_failures_are_isolated(tmp_path):
+    class Failing:
+        def fetch(self):
+            raise RuntimeError("source offline")
+
+    class Executive:
+        def fetch(self):
+            return [{
+                "subject": "Donald Trump",
+                "asset": "PUBLIC_FINANCIAL_DISCLOSURE",
+                "transaction_type": "ANNUAL_REPORT",
+                "source_url": "https://oge.example/trump.pdf",
+            }]
+
+    result = DisclosureWorkflow(store=ResearchStore(tmp_path)).sync_files(
+        congress_provider=Failing(), executive_provider=Executive(), now=NOW
+    )
+    assert result.status is ResearchStatus.SETUP_FOUND
+    assert result.payload["records"][0]["source_family"] == "executive"
+    assert any("congress provider unavailable" in warning for warning in result.warnings)
+
+
+def test_official_house_provider_returns_filing_level_evidence():
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "GET":
+            return httpx.Response(200, text='<input type="hidden" name="__RequestVerificationToken" value="token" />')
+        return httpx.Response(200, text='<a href="/public_disc/ptr-pdfs/2026/20033725.pdf">filing</a>')
+
+    provider = OfficialHouseDisclosureProvider(
+        subjects=("Nancy Pelosi",),
+        filing_year=2026,
+        http=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+    rows = provider.fetch()
+    assert rows[0]["subject"] == "Nancy Pelosi"
+    assert rows[0]["transaction_type"] == "FILING"
+    assert rows[0]["source_url"].endswith("20033725.pdf")
+
+
+def test_official_oge_provider_preserves_trump_source_url():
+    provider = OfficialOGEExecutiveDisclosureProvider(
+        document_urls=("https://extapps2.oge.gov/201/Trump-05.08.2026.pdf",)
+    )
+    row = provider.fetch()[0]
+    assert row["subject"] == "Donald Trump"
+    assert row["asset"] == "PUBLIC_FINANCIAL_DISCLOSURE"
+    assert row["disclosure_date"] == "2026-05-08"

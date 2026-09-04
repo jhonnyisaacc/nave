@@ -91,14 +91,14 @@ def _normalize(
         first = _clean(record.get("firstName")) or ""
         last = _clean(record.get("lastName")) or ""
         subject = (f"{first} {last}").strip() or _clean(record.get("politician")) or "Unknown"
-        asset = _clean(record.get("symbol") or record.get("assetDescription"))
-        tx_type = _clean(record.get("type") or record.get("transactionType"))
+        asset = _clean(record.get("symbol") or record.get("assetDescription") or record.get("asset_description") or record.get("asset"))
+        tx_type = _clean(record.get("type") or record.get("transactionType") or record.get("transaction_type"))
         owner = _clean(record.get("owner"))
         source = _clean(record.get("link") or record.get("source_url"))
     else:
         subject = _clean(record.get("subject") or record.get("filer") or record.get("name")) or "Unknown"
-        asset = _clean(record.get("asset") or record.get("symbol") or record.get("asset_description"))
-        tx_type = _clean(record.get("transaction_type") or record.get("type"))
+        asset = _clean(record.get("asset") or record.get("symbol") or record.get("asset_description") or record.get("assetDescription"))
+        tx_type = _clean(record.get("transaction_type") or record.get("transactionType") or record.get("type"))
         owner = _clean(record.get("owner"))
         source = _clean(record.get("source_url") or record.get("link") or record.get("source_reference"))
     if not asset or not tx_type:
@@ -162,6 +162,8 @@ class DisclosureWorkflow:
         congress_records: Iterable[Mapping[str, Any]] = (),
         executive_records: Iterable[Mapping[str, Any]] = (),
         now: datetime | None = None,
+        warnings: Iterable[str] = (),
+        provider_status: Mapping[str, Any] | None = None,
     ) -> ResearchResult:
         decision_time = now or datetime.now(UTC)
         records = normalize_records(congress_records, family=SourceFamily.CONGRESS)
@@ -217,9 +219,14 @@ class DisclosureWorkflow:
                 "source_families": [family.value for family in SourceFamily],
                 "portfolio_candidate_consumed": False,
                 "disclosure_is_not_a_buy_signal": True,
+                "provider_status": dict(provider_status or {}),
+                "partial": bool(provider_status and any(
+                    isinstance(value, Mapping) and value.get("status") == "UNAVAILABLE"
+                    for value in provider_status.values()
+                )),
             },
             evidence=tuple(evidence),
-            warnings=["disclosures are delayed context and require independent portfolio evidence"] if new_records else [],
+            warnings=[*warnings, *(["disclosures are delayed context and require independent portfolio evidence"] if new_records else [])],
         )
         self.store.save_result(result)
         return result
@@ -230,6 +237,8 @@ class DisclosureWorkflow:
         congress_file: Path | None = None,
         executive_file: Path | None = None,
         now: datetime | None = None,
+        congress_provider: DisclosureProvider | None = None,
+        executive_provider: DisclosureProvider | None = None,
     ) -> ResearchResult:
         def load(path: Path | None) -> list[Mapping[str, Any]]:
             if path is None:
@@ -238,39 +247,64 @@ class DisclosureWorkflow:
             rows = raw.get("records", raw) if isinstance(raw, Mapping) else raw
             return [row for row in rows if isinstance(row, Mapping)]
 
-        congress_records = load(congress_file)
+        warnings: list[str] = []
+        provider_status: dict[str, Any] = {}
+        try:
+            congress_records = load(congress_file)
+        except (OSError, json.JSONDecodeError, TypeError) as exc:
+            congress_records = []
+            warnings.append(f"congress file unavailable: {exc}")
+            provider_status[SourceFamily.CONGRESS.value] = {"status": "UNAVAILABLE", "source": str(congress_file)}
         if congress_file is None:
             try:
-                from trading.stocks.politicians.provider import FMPPoliticianTradesProvider
+                if congress_provider is None:
+                    from research.disclosure_providers import OfficialHouseDisclosureProvider
 
-                congress_records = [asdict(item) for item in FMPPoliticianTradesProvider().fetch_all()]
+                    congress_provider = OfficialHouseDisclosureProvider()
+                congress_records = list(congress_provider.fetch())
+                provider_status[SourceFamily.CONGRESS.value] = {
+                    "status": "OK" if congress_records else "NO_RECORDS",
+                    "source": "official House disclosure data",
+                }
             except Exception as exc:  # provider/configuration failures remain explicit state
-                result = ResearchResult(
-                    workflow="disclosures.sync",
-                    status=ResearchStatus.DATA_UNAVAILABLE,
-                    metadata=RunMetadata(
-                        strategy_name="political-disclosures-normalization",
-                        strategy_version="1.0.0",
-                        run_id=str(uuid.uuid4()),
-                        decision_time=now or datetime.now(UTC),
-                        started_at=now or datetime.now(UTC),
-                        completed_at=now or datetime.now(UTC),
-                        input_available_at=None,
-                    ),
-                    payload={
-                        "records": [],
-                        "fetched_total": 0,
-                        "new_total": 0,
-                        "source_families": [family.value for family in SourceFamily],
-                        "portfolio_candidate_consumed": False,
-                        "disclosure_is_not_a_buy_signal": True,
-                    },
-                    warnings=[f"congress provider unavailable: {exc}"],
-                )
-                self.store.save_result(result)
-                return result
+                warnings.append(f"congress provider unavailable: {exc}")
+                provider_status[SourceFamily.CONGRESS.value] = {"status": "UNAVAILABLE", "source": "official House disclosure data"}
+                # FMP is a convenience fallback, never an official-source label.
+                try:
+                    from trading.stocks.politicians.provider import FMPPoliticianTradesProvider
+
+                    congress_records = [asdict(item) for item in FMPPoliticianTradesProvider().fetch_all()]
+                    provider_status[SourceFamily.CONGRESS.value] = {
+                        "status": "SECONDARY_FALLBACK" if congress_records else "NO_RECORDS",
+                        "source": "FMP secondary convenience provider",
+                    }
+                except Exception as fallback_exc:  # noqa: BLE001
+                    warnings.append(f"congress secondary provider unavailable: {fallback_exc}")
+
+        try:
+            executive_records = load(executive_file)
+        except (OSError, json.JSONDecodeError, TypeError) as exc:
+            executive_records = []
+            warnings.append(f"executive file unavailable: {exc}")
+            provider_status[SourceFamily.EXECUTIVE.value] = {"status": "UNAVAILABLE", "source": str(executive_file)}
+        if executive_file is None:
+            try:
+                if executive_provider is None:
+                    from research.disclosure_providers import OfficialOGEExecutiveDisclosureProvider
+
+                    executive_provider = OfficialOGEExecutiveDisclosureProvider()
+                executive_records = list(executive_provider.fetch())
+                provider_status[SourceFamily.EXECUTIVE.value] = {
+                    "status": "OK" if executive_records else "NO_RECORDS",
+                    "source": "official OGE executive disclosure data",
+                }
+            except Exception as exc:  # noqa: BLE001
+                warnings.append(f"executive provider unavailable: {exc}")
+                provider_status[SourceFamily.EXECUTIVE.value] = {"status": "UNAVAILABLE", "source": "official OGE executive disclosure data"}
         return self.sync_payload(
             congress_records=congress_records,
-            executive_records=load(executive_file),
+            executive_records=executive_records,
             now=now,
+            warnings=warnings,
+            provider_status=provider_status,
         )
