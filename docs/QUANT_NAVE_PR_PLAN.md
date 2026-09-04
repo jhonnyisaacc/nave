@@ -10,7 +10,7 @@ has been opened and is awaiting review. All workflows remain
 | 1 | NAVE research foundation | `feat/nave-research-foundation` | `main` | — | OPEN | 8 passed | [PR #42](https://github.com/jhonnyisaacc/nave/pull/42) |
 | 2 | José Luis Cava / macro intelligence | `feat/nave-cava-intelligence` | PR 1 | PR 1 | PLANNED | — | — |
 | 3 | Crypto futures momentum + COT | `feat/nave-crypto-futures` | PR 1 | PR 1 | PLANNED | — | — |
-| 4 | Portfolio / ISM / watchlist | `feat/nave-portfolio` | PR 1 | PR 1 | PLANNED | — | — |
+| 4 | Portfolio / ISM / watchlist | `feat/nave-portfolio` | PR 1 | PR 1 | IN PROGRESS | focused tests pending | — |
 | 5 | Political financial disclosures | `feat/nave-political-disclosures` | PR 1 | PR 1 | PLANNED | — | — |
 | 6 | Memecoin research + Dune | `feat/nave-memecoin-research` | PR 1 | PR 1 | PLANNED | — | — |
 | 7 | Options research | `feat/nave-options-research` | PR 1 | PR 1 | PLANNED | — | — |
