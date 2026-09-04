@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import json as _json
 import logging
-from typing import Optional
+from pathlib import Path
 
 import typer
 from rich.console import Console
@@ -19,6 +19,10 @@ from cli.professional_typer import ProfessionalTyper
 from core.logger import configure_logger
 from trading.memecoin import MemecoinScanner
 from trading.memecoin.scanner import SORT_ACTIVE, SORT_FRESH, SORT_TOP_MCAP
+from research.core.contracts import ResearchResult
+from research.core.store import ResearchStore
+from research.memecoin_workflow import MemecoinResearchWorkflow
+from research.dune.materializer import DuneMaterializer
 
 _SORT_CHOICES = {
     "active": SORT_ACTIVE,
@@ -31,6 +35,126 @@ logger = configure_logger(__name__, level=logging.INFO)
 memecoin_app = ProfessionalTyper(
     help="Solana memecoin scanner (Pump.fun + Helius + DexScreener + Jupiter)."
 )
+dune_app = ProfessionalTyper(help="Bounded Dune materialization for memecoin research.")
+memecoin_app.add_typer(dune_app, name="dune")
+
+
+def _emit_research(result: ResearchResult, *, json_out: bool, markdown: bool) -> None:
+    if markdown:
+        typer.echo(result.to_markdown())
+    elif json_out:
+        typer.echo(result.to_json())
+    else:
+        typer.echo(f"{result.workflow}: {result.status.value}")
+        if result.warnings:
+            typer.echo("Warnings: " + "; ".join(result.warnings))
+
+
+@memecoin_app.command("discover")
+def discover(
+    input_file: Path | None = typer.Option(None, "--input-file", exists=True, readable=True),
+    dune_cache: Path | None = typer.Option(None, "--dune-cache", exists=True, readable=True),
+    state_dir: Path | None = typer.Option(None, "--state-dir"),
+    json_out: bool = typer.Option(False, "--json"),
+    markdown: bool = typer.Option(False, "--markdown"),
+) -> None:
+    """Discover point-in-time candidates from an explicit local snapshot."""
+    if input_file:
+        raw = _json.loads(input_file.read_text(encoding="utf-8"))
+        rows = raw.get("rows", raw) if isinstance(raw, dict) else raw
+    elif dune_cache:
+        rows = []
+    else:
+        raise typer.BadParameter("pass --input-file for replay or --dune-cache for a materialized Dune result")
+    result = MemecoinResearchWorkflow(store=ResearchStore(state_dir)).discover(rows, dune_cache=dune_cache)
+    _emit_research(result, json_out=json_out, markdown=markdown)
+
+
+@dune_app.command("materialize")
+def materialize_dune(
+    query_id: str = typer.Option(..., "--query-id", help="Saved Dune query ID."),
+    output: Path = typer.Option(..., "--output", help="Local JSON materialization path."),
+    limit: int = typer.Option(10_000, "--limit", min=1, max=100_000),
+    force: bool = typer.Option(False, "--force/--no-force", help="Re-run even when the matching cache exists."),
+) -> None:
+    """Run one bounded Dune query and cache it for later local discovery."""
+    payload = DuneMaterializer().materialize(
+        query_id=query_id,
+        output=output,
+        limit=limit,
+        force=force,
+    )
+    typer.echo(_json.dumps({key: value for key, value in payload.items() if key != "rows"}, indent=2, default=str))
+
+
+def _load_result(store: ResearchStore, path: Path | None) -> ResearchResult:
+    if path:
+        return ResearchResult.from_dict(_json.loads(path.read_text(encoding="utf-8")))
+    result = store.load_result("memecoin.discover")
+    if result is None:
+        raise typer.BadParameter("no discovery result found; pass --discover-file or run memecoin discover")
+    return result
+
+
+@memecoin_app.command("evaluate")
+def evaluate(
+    outcomes_file: Path = typer.Option(..., "--outcomes-file", exists=True, readable=True),
+    discover_file: Path | None = typer.Option(None, "--discover-file", exists=True, readable=True),
+    state_dir: Path | None = typer.Option(None, "--state-dir"),
+    json_out: bool = typer.Option(False, "--json"),
+    markdown: bool = typer.Option(False, "--markdown"),
+) -> None:
+    """Evaluate selected research rows against later outcomes."""
+    store = ResearchStore(state_dir)
+    raw = _json.loads(outcomes_file.read_text(encoding="utf-8"))
+    outcomes = raw.get("outcomes", raw) if isinstance(raw, dict) else raw
+    result = MemecoinResearchWorkflow(store=store).evaluate(scan_result=_load_result(store, discover_file), outcomes=outcomes)
+    _emit_research(result, json_out=json_out, markdown=markdown)
+
+
+@memecoin_app.command("missed-moves")
+def missed_moves_command(
+    outcomes_file: Path = typer.Option(..., "--outcomes-file", exists=True, readable=True),
+    discover_file: Path | None = typer.Option(None, "--discover-file", exists=True, readable=True),
+    move_threshold: float = typer.Option(0.50, "--move-threshold"),
+    state_dir: Path | None = typer.Option(None, "--state-dir"),
+    json_out: bool = typer.Option(False, "--json"),
+    markdown: bool = typer.Option(False, "--markdown"),
+) -> None:
+    """Audit large movers missed by the point-in-time discovery filters."""
+    store = ResearchStore(state_dir)
+    raw = _json.loads(outcomes_file.read_text(encoding="utf-8"))
+    outcomes = raw.get("outcomes", raw) if isinstance(raw, dict) else raw
+    result = MemecoinResearchWorkflow(store=store).missed_moves(
+        scan_result=_load_result(store, discover_file), outcomes=outcomes, move_threshold=move_threshold
+    )
+    _emit_research(result, json_out=json_out, markdown=markdown)
+
+
+@memecoin_app.command("backtest")
+def backtest(
+    discover_file: Path = typer.Option(..., "--discover-file", exists=True, readable=True),
+    outcomes_file: Path = typer.Option(..., "--outcomes-file", exists=True, readable=True),
+    state_dir: Path | None = typer.Option(None, "--state-dir"),
+    json_out: bool = typer.Option(False, "--json"),
+) -> None:
+    """Run the bounded structured evaluation as a backtest report."""
+    store = ResearchStore(state_dir)
+    scan = ResearchResult.from_dict(_json.loads(discover_file.read_text(encoding="utf-8")))
+    raw = _json.loads(outcomes_file.read_text(encoding="utf-8"))
+    outcomes = raw.get("outcomes", raw) if isinstance(raw, dict) else raw
+    result = MemecoinResearchWorkflow(store=store).evaluate(scan_result=scan, outcomes=outcomes)
+    _emit_research(result, json_out=json_out, markdown=False)
+
+
+@memecoin_app.command("status")
+def research_status(
+    state_dir: Path | None = typer.Option(None, "--state-dir"),
+    json_out: bool = typer.Option(False, "--json"),
+) -> None:
+    """Show discovery/evaluation/missed-move result states."""
+    payload = MemecoinResearchWorkflow(store=ResearchStore(state_dir)).status()
+    typer.echo(_json.dumps(payload, indent=2))
 
 
 def _verdict_color(verdict: str) -> str:
